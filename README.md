@@ -2,9 +2,20 @@
 
 **Pay gas in $WIF on Robinhood Chain.**
 
-ERC-4337 Paymaster that lets users execute transactions (including World is Fair votes) with **zero ETH**. Gas is paid in $WIF. A portion of every payment is burned.
+ERC-4337 Paymaster that lets users execute transactions (including World is Flat votes) with **zero ETH**. Gas is paid in $WIF. A portion of every payment is burned.
 
 Built for the [World is Flat Hackathon](https://worldisflat.fun/build).
+
+---
+
+## Live Deployed Contracts (Robinhood Chain - 4663)
+
+| Contract | Address |
+|----------|---------|
+| **WIFPaymaster** | [`0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE`](https://explorer.robinhood.com/address/0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE) |
+| **BoundedRateProvider** | [`0x3A040be5ee7829A38943294DFC6116Bf095eF497`](https://explorer.robinhood.com/address/0x3A040be5ee7829A38943294DFC6116Bf095eF497) |
+| **$WIF Token** | [`0x5173b8eA6923c2d40267890D45C46a3480954773`](https://explorer.robinhood.com/address/0x5173b8eA6923c2d40267890D45C46a3480954773) |
+| **EntryPoint v0.7** | `0x0000000071727De22E5E9d8BAf0edAc6f37da032` |
 
 ---
 
@@ -61,8 +72,8 @@ EntryPoint (v0.7)
 ### 1. Install
 
 ```bash
-git clone <this-repo>
-cd wif-paymaster
+git clone https://github.com/Daveboycyber/Paymaster.git
+cd Paymaster
 forge install
 ```
 
@@ -77,12 +88,11 @@ forge test -vv
 ```bash
 export PRIVATE_KEY=0x...
 export TREASURY=0xYourTreasury
-export INITIAL_WIF_PER_ETH=800000000000000000000000   # adjust to current market
+export INITIAL_WIF_PER_ETH=2000000000000000000000000
 
 forge script script/Deploy.s.sol:Deploy \
-  --rpc-url https://robinhood-mainnet.g.alchemy.com/v2/YOUR_KEY \
-  --broadcast \
-  --verify  # if explorer supports it
+  --rpc-url https://rpc.mainnet.chain.robinhood.com \
+  --broadcast
 ```
 
 After deploy:
@@ -112,28 +122,19 @@ Minimal snippet for a dApp:
 const userOp = await smartAccount.encodeUserOp({
   // ... your call (vote, transfer, etc.)
   paymaster: {
-    address: WIF_PAYMASTER_ADDRESS,
-    // most SDKs auto-fill paymasterAndData
+    address: "0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE",
   }
 });
 
 // User must have approved the paymaster for $WIF beforehand
-await wif.approve(WIF_PAYMASTER_ADDRESS, MaxUint256);
+await wif.approve("0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE", MaxUint256);
 ```
-
----
-
-## Addresses (to be filled after deploy)
-
-- **WIFPaymaster**: `TBD`
-- **BoundedRateProvider**: `TBD`
-- **$WIF**: `0x5173b8eA6923c2d40267890D45C46a3480954773`
-- **EntryPoint v0.7**: `0x0000000071727De22E5E9d8BAf0edAc6f37da032`
 
 ---
 
 ## Roadmap / Next Steps
 
+- [x] Deploy contracts to Robinhood Chain
 - [ ] Frontend demo (zero-ETH wallet → real vote)
 - [ ] One-click “Enable gas payment with $WIF” button
 - [ ] Dashboard of total $WIF collected / burned
