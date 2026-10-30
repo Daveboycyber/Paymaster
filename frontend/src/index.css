@@ -1,13 +1,33 @@
 * {
   box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #050505;
+  --green: #39ff14;
+  --green-dim: #1a8a0a;
+  --green-glow: rgba(57, 255, 20, 0.25);
+  --text: #e8e8e8;
+  --muted: #6b6b6b;
+  --border: #1a1a1a;
+  --card: #0a0a0a;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "SF Mono", "Fira Code", "Consolas", "Monaco", monospace;
+  -webkit-font-smoothing: antialiased;
 }
 
 body {
-  margin: 0;
   min-height: 100vh;
-  background: radial-gradient(ellipse at top, #1a1a2e 0%, #0a0a0a 70%);
-  color: #f5f5f5;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(57, 255, 20, 0.08), transparent),
+    linear-gradient(to bottom, #050505, #000);
 }
 
 button {
@@ -16,54 +36,83 @@ button {
 }
 
 .card {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  padding: 24px;
-  backdrop-filter: blur(10px);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 28px;
+  position: relative;
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(57,255,20,0.15), transparent 40%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
 }
 
 .btn {
-  background: linear-gradient(135deg, #f59e0b, #d97706);
+  background: var(--green);
   color: #000;
   border: none;
-  border-radius: 12px;
-  padding: 14px 28px;
+  border-radius: 2px;
+  padding: 14px 24px;
   font-weight: 700;
-  font-size: 16px;
-  transition: transform 0.15s, box-shadow 0.15s;
+  font-size: 14px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  transition: all 0.15s;
+  box-shadow: 0 0 20px var(--green-glow);
 }
 
 .btn:hover:not(:disabled) {
+  background: #5cff3d;
+  box-shadow: 0 0 30px rgba(57, 255, 20, 0.4);
   transform: translateY(-1px);
-  box-shadow: 0 8px 20px rgba(245, 158, 11, 0.3);
 }
 
 .btn:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
-}
-
-.btn-secondary {
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #f5f5f5;
+  box-shadow: none;
 }
 
 .badge {
   display: inline-block;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 2px;
+  font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
 }
 
 .badge-green {
-  background: rgba(34, 197, 94, 0.15);
-  color: #4ade80;
+  background: rgba(57, 255, 20, 0.12);
+  color: var(--green);
+  border: 1px solid rgba(57, 255, 20, 0.25);
 }
 
 .badge-red {
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
+  background: rgba(255, 60, 60, 0.1);
+  color: #ff5c5c;
+  border: 1px solid rgba(255, 60, 60, 0.25);
+}
+
+.mono {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.glow-text {
+  color: var(--green);
+  text-shadow: 0 0 12px var(--green-glow);
 }
