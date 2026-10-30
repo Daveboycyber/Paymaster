@@ -8,7 +8,7 @@ Built for the [World is Flat Hackathon](https://worldisflat.fun/build).
 
 ---
 
-## Live Deployed Contracts (Robinhood Chain - 4663)
+## Live Deployed Contracts (Robinhood Chain · 4663)
 
 | Contract | Address |
 |----------|---------|
@@ -21,11 +21,30 @@ Built for the [World is Flat Hackathon](https://worldisflat.fun/build).
 
 ## Why this exists
 
-Voting with $WIF currently still requires ETH for gas. This is friction that contradicts the project’s own ideology.  
-WIF Paymaster removes that friction and turns $WIF into real chain utility.
+Voting with $WIF currently still requires ETH for gas. This friction contradicts the project’s ideology.  
+WIF Paymaster removes it and turns $WIF into real chain utility.
 
 **Demo line:**  
 > “I voted with only $WIF. My wallet has 0 ETH.”
+
+---
+
+## Repository Structure (Monorepo)
+
+```
+Paymaster/
+├── src/                  # Solidity contracts
+│   ├── WIFPaymaster.sol
+│   ├── BoundedRateProvider.sol
+│   └── ...
+├── test/                 # Foundry tests
+├── script/               # Deployment scripts
+├── frontend/             # Zero-ETH demo UI (React + Vite)
+│   ├── src/
+│   ├── package.json
+│   └── ...
+└── README.md
+```
 
 ---
 
@@ -43,47 +62,32 @@ EntryPoint (v0.7)
     │
     ├── validatePaymasterUserOp()  →  checks rate, caps, balance, allowance
     │
-    ├── execute UserOp (e.g. send 1 $WIF to vote address)
+    ├── execute UserOp
     │
     └── postOp()  →  pulls $WIF, burns %, sends rest to treasury
 ```
 
-### Key Contracts
-
-| Contract | Purpose |
-|----------|---------|
-| `WIFPaymaster` | Main paymaster. Sponsors gas, charges $WIF, burns portion |
-| `BoundedRateProvider` | Safe $WIF/ETH rate with hard bounds + circuit breaker |
-| `MockWIF` | Test token |
-
 ### Safety Features
 
-- Hard per-transaction gas cost cap (default 0.02 ETH)
+- Hard per-transaction gas cost cap
 - Global daily sponsorship limit
-- Bounded rate (cannot be manipulated via thin pool)
+- Bounded rate (safe for thin liquidity)
 - Explicit $WIF allowance required
 - Configurable premium + burn percentage
 - Circuit breaker on rate provider
 
 ---
 
-## Quick Start
-
-### 1. Install
+## Quick Start – Contracts
 
 ```bash
 git clone https://github.com/Daveboycyber/Paymaster.git
 cd Paymaster
 forge install
-```
-
-### 2. Test
-
-```bash
 forge test -vv
 ```
 
-### 3. Deploy to Robinhood Chain
+### Deploy
 
 ```bash
 export PRIVATE_KEY=0x...
@@ -95,51 +99,54 @@ forge script script/Deploy.s.sol:Deploy \
   --broadcast
 ```
 
-After deploy:
-1. Call `depositToEntryPoint{value: X ether}()` so the paymaster has ETH to sponsor with.
-2. (Optional) Call `addStake()` if required by bundlers.
+After deploy, fund the paymaster:
+
+```bash
+cast send 0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE "depositToEntryPoint()" \
+  --value 0.05ether \
+  --rpc-url https://rpc.mainnet.chain.robinhood.com \
+  --private-key $PRIVATE_KEY
+```
 
 ---
 
-## Configuration (Owner)
+## Quick Start – Frontend Demo
 
-```solidity
-setPremiumBps(1500);      // 15% premium
-setBurnBps(3000);         // 30% burned
-setMaxGasCostWei(0.02e18);
-setDailyLimitWei(1e18);
-setRateProvider(newProvider);
+```bash
+cd frontend
+npm install
+npm run dev
 ```
+
+Then open the local URL. The UI demonstrates the “Vote with only $WIF” flow.
 
 ---
 
 ## Integration (for other builders)
 
-Minimal snippet for a dApp:
-
 ```ts
-// Using permissionless.js / Alchemy Account Kit / ZeroDev etc.
+// Using permissionless.js / Alchemy Account Kit / ZeroDev
 const userOp = await smartAccount.encodeUserOp({
-  // ... your call (vote, transfer, etc.)
+  // your call (vote, transfer, etc.)
   paymaster: {
     address: "0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE",
   }
 });
 
-// User must have approved the paymaster for $WIF beforehand
+// User must approve the paymaster for $WIF first
 await wif.approve("0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE", MaxUint256);
 ```
 
 ---
 
-## Roadmap / Next Steps
+## Roadmap
 
 - [x] Deploy contracts to Robinhood Chain
-- [ ] Frontend demo (zero-ETH wallet → real vote)
-- [ ] One-click “Enable gas payment with $WIF” button
-- [ ] Dashboard of total $WIF collected / burned
-- [ ] Optional EIP-7702 support path
-- [ ] Production TWAP + Chainlink rate provider (post-hackathon)
+- [x] Frontend demo (monorepo)
+- [ ] Real UserOperation integration (Alchemy bundler)
+- [ ] One-click “Enable gas payment with $WIF”
+- [ ] Dashboard of $WIF collected / burned
+- [ ] Production TWAP rate provider
 
 ---
 
