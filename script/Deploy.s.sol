@@ -25,6 +25,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  *   STAKE_WEI          = ETH to stake; bundlers require a staked paymaster because
  *                        validation touches the rate provider and token storage (ERC-7562)
  *   UNSTAKE_DELAY_SEC  = stake unlock delay (default 86400)
+ *   OWNER              = e.g. a Safe; starts a two-step ownership transfer of both contracts,
+ *                        which the Safe completes by calling acceptOwnership() on each
  */
 contract Deploy is Script {
     // Official addresses on Robinhood Chain (4663)
@@ -39,6 +41,7 @@ contract Deploy is Script {
         uint256 depositWei = vm.envOr("DEPOSIT_WEI", uint256(0));
         uint256 stakeWei = vm.envOr("STAKE_WEI", uint256(0));
         uint32 unstakeDelay = uint32(vm.envOr("UNSTAKE_DELAY_SEC", uint256(1 days)));
+        address newOwner = vm.envOr("OWNER", address(0));
 
         // Reasonable bounds for hackathon (adjust after checking live price)
         uint256 minRate = initialWifPerEth / 5;   // 0.2x
@@ -62,6 +65,10 @@ contract Deploy is Script {
         if (keeper != address(0)) rateProvider.setKeeper(keeper);
         if (depositWei > 0) paymaster.depositToEntryPoint{value: depositWei}();
         if (stakeWei > 0) paymaster.addStake{value: stakeWei}(unstakeDelay);
+        if (newOwner != address(0)) {
+            rateProvider.transferOwnership(newOwner);
+            paymaster.transferOwnership(newOwner);
+        }
 
         console2.log("BoundedRateProvider:", address(rateProvider));
         console2.log("WIFPaymaster:", address(paymaster));

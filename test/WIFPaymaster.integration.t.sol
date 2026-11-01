@@ -61,7 +61,7 @@ contract WIFPaymasterIntegrationTest is Test {
         op.accountGasLimits = bytes32((uint256(150_000) << 128) | 200_000);
         op.preVerificationGas = 50_000;
         op.gasFees = bytes32((GAS_PRICE << 128) | GAS_PRICE);
-        op.paymasterAndData = abi.encodePacked(address(paymaster), uint128(150_000), uint128(150_000), pmExtra);
+        op.paymasterAndData = abi.encodePacked(address(paymaster), uint128(100_000), uint128(150_000), pmExtra);
         bytes32 hash = MessageHashUtils.toEthSignedMessageHash(entryPoint.getUserOpHash(op));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerKey, hash);
         op.signature = abi.encodePacked(r, s, v);
@@ -88,9 +88,13 @@ contract WIFPaymasterIntegrationTest is Test {
         assertEq(address(account).balance, 0, "account never held ETH");
         assertEq(wif.balanceOf(voteAddress), 1 ether, "vote landed");
         assertGt(fee, 0, "gas paid in WIF");
-        assertEq(wif.balanceOf(address(0xdead)), (fee * 3000) / 10_000, "30% burned");
+        assertEq(wif.balanceOf(address(paymaster)), fee, "refund settled, fee held until flush");
+
+        uint256 supply = wif.totalSupply();
+        paymaster.flush();
+        assertEq(supply - wif.totalSupply(), (fee * 3000) / 10_000, "30% burned from supply");
         assertEq(wif.balanceOf(treasury), fee - (fee * 3000) / 10_000);
-        assertEq(wif.balanceOf(address(paymaster)), 0, "prefund fully settled");
+        assertEq(wif.balanceOf(address(paymaster)), 0);
         assertLt(entryPoint.balanceOf(address(paymaster)), depositBefore, "paymaster paid ETH gas");
     }
 
@@ -114,7 +118,7 @@ contract WIFPaymasterIntegrationTest is Test {
 
         assertGt(wifBefore - wif.balanceOf(address(account)), 0, "failed op still charged");
         assertEq(wif.balanceOf(voteAddress), 0);
-        assertEq(wif.balanceOf(address(paymaster)), 0);
+        assertEq(wif.balanceOf(address(paymaster)), wifBefore - wif.balanceOf(address(account)), "only the fee kept");
     }
 
     function test_RevokingAllowanceCannotDodgeFee() public {
@@ -124,7 +128,7 @@ contract WIFPaymasterIntegrationTest is Test {
 
         assertEq(wif.allowance(address(account), address(paymaster)), 0, "allowance revoked");
         assertGt(wifBefore - wif.balanceOf(address(account)), 0, "fee collected anyway");
-        assertGt(wif.balanceOf(treasury), 0);
+        assertGt(paymaster.pendingTreasury(), 0);
     }
 
     function test_NewAccountOnboardsWithZeroEth() public {
@@ -140,7 +144,7 @@ contract WIFPaymasterIntegrationTest is Test {
         op.accountGasLimits = bytes32((uint256(400_000) << 128) | 100_000);
         op.preVerificationGas = 50_000;
         op.gasFees = bytes32((GAS_PRICE << 128) | GAS_PRICE);
-        op.paymasterAndData = abi.encodePacked(address(paymaster), uint128(150_000), uint128(150_000));
+        op.paymasterAndData = abi.encodePacked(address(paymaster), uint128(100_000), uint128(150_000));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(newKey, MessageHashUtils.toEthSignedMessageHash(entryPoint.getUserOpHash(op)));
         op.signature = abi.encodePacked(r, s, v);
         _handle(op);
