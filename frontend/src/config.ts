@@ -20,8 +20,8 @@ export const PAYMASTER_DEPLOY_BLOCK = BigInt(env.VITE_PAYMASTER_DEPLOY_BLOCK || 
 // Any ERC-4337 v0.7 bundler that serves chain 4663 (Pimlico public works without a key)
 export const BUNDLER_URL = env.VITE_BUNDLER_URL || 'https://public.pimlico.io/v2/4663/rpc'
 
-// paymasterAndData gas limits (postOp needs ~90k, see WIFPaymaster.postOpGasOverhead)
-export const PAYMASTER_VERIFICATION_GAS = 150_000n
+// paymasterAndData gas limits: validation uses ~61k; postOp ~33k, or ~108k for the one-time setup op
+export const PAYMASTER_VERIFICATION_GAS = 100_000n
 export const PAYMASTER_POST_OP_GAS = 150_000n
 
 export const EXPLORER = robinhood.blockExplorers.default.url

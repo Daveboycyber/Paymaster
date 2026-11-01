@@ -129,7 +129,9 @@ After deploy (skip what the optional env vars already did):
 3. **Turn on $WIF gas**: one sponsored setup op deploys the account and approves the paymaster, paid in $WIF.
 4. **Send $WIF**: every op shows the real tx, the $WIF paid as gas, the amount burned and 0 ETH used.
 
-Live totals (transactions sponsored, $WIF paid, $WIF burned) come from the paymaster's `UserOpSponsored` events.
+Every op carries a signed `maxWif` cap (the quote plus 10%), so the price can't be raised after the user signs.
+Live totals come from the paymaster's on-chain `totals()`, and the activity list from its `UserOpSponsored` events.
+The page shows clearly when a daily limit is reached and when it resets.
 
 ```bash
 cd frontend

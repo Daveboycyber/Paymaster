@@ -319,6 +319,11 @@ a {
   color: var(--faint);
 }
 
+.hint.center {
+  text-align: center;
+  margin-top: -6px;
+}
+
 /* inputs */
 
 .input {

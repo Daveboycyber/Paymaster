@@ -2,15 +2,16 @@ import { useEffect, useState } from 'react'
 import { BUNDLER_URL, ENTRY_POINT, PAYMASTER, PAYMASTER_POST_OP_GAS, PAYMASTER_VERIFICATION_GAS, REPO_URL, WIF_TOKEN } from './config'
 import { AddressLink, Button, Copy, Notice } from './components/ui'
 import { EnableStep, FundStep, SendStep } from './components/Steps'
+import { friendlyError } from './lib/errors'
 import { fmtEth, fmtWif, short } from './lib/format'
-import { useBalances, usePaymaster, useStats } from './lib/hooks'
-import { friendlyError, makeSmartClient, type SmartClient, type Sponsored } from './lib/smart'
+import { useBalances, useHistory, useLimitReset, usePaymaster, useStats } from './lib/hooks'
+import type { SmartClient, Sponsored } from './lib/smart'
 import { browserKey, browserOwner, connectWallet, hasExtensionWallet, type Owner } from './lib/wallet'
 
 const LAST_OWNER = 'wif-paymaster:owner'
 const STEPS = ['Add $WIF', 'Turn on $WIF gas', 'Send'] as const
 
-type Receipt = Sponsored & { label: string }
+type Receipt = Pick<Sponsored, 'txHash' | 'wifCharged' | 'wifBurned'> & { success?: boolean; label: string }
 
 function remember(kind: Owner['kind'] | null) {
   try {
@@ -32,12 +33,23 @@ export default function App() {
   const balances = useBalances(account, owner?.kind === 'wallet' ? owner.address : undefined)
   const paymaster = usePaymaster()
   const stats = useStats(receipts.length)
+  const resetAt = useLimitReset(account, paymaster.gasPrice, receipts.length)
+  const history = useHistory(account, receipts.length)
+  // This session's receipts first (they have labels), then older ops from the chain
+  const activity: Receipt[] = [
+    ...receipts,
+    ...history
+      .filter((h) => !receipts.some((r) => r.txHash === h.txHash))
+      .map((h) => ({ ...h, label: 'Sponsored transaction' })),
+  ]
 
   const connect = async (getOwner: () => Owner | Promise<Owner>, label: string) => {
     setError('')
     setConnecting(label)
     try {
       const next = await getOwner()
+      // The smart-account code loads only when someone connects
+      const { makeSmartClient } = await import('./lib/smart')
       setClient(await makeSmartClient(next))
       setOwner(next)
       remember(next.kind)
@@ -158,20 +170,26 @@ export default function App() {
               </ol>
 
               {step === 0 && <FundStep client={client} owner={owner} balances={balances} />}
-              {step === 1 && <EnableStep client={client} balances={balances} paymaster={paymaster} onDone={(r) => setReceipts((all) => [r, ...all])} />}
-              {step === 2 && <SendStep client={client} balances={balances} paymaster={paymaster} onDone={(r) => setReceipts((all) => [r, ...all])} />}
+              {step >= 1 && resetAt && (
+                <Notice>
+                  This account reached today’s gas limit. It can send again at{' '}
+                  {resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.
+                </Notice>
+              )}
+              {step === 1 && <EnableStep client={client} owner={owner} balances={balances} paymaster={paymaster} blocked={!!resetAt} onDone={(r) => setReceipts((all) => [r, ...all])} />}
+              {step === 2 && <SendStep client={client} owner={owner} balances={balances} paymaster={paymaster} blocked={!!resetAt} onDone={(r) => setReceipts((all) => [r, ...all])} />}
 
               {owner.kind === 'browser' && <BrowserKeyNote />}
             </>
           )}
         </section>
 
-        {receipts.length > 0 && (
+        {activity.length > 0 && (
           <section className="receipts" aria-label="Your transactions">
-            {receipts.map((r) => (
-              <article key={r.userOpHash} className={`receipt ${r.success ? '' : 'receipt-failed'}`}>
+            {activity.map((r) => (
+              <article key={r.txHash} className={`receipt ${r.success === false ? 'receipt-failed' : ''}`}>
                 <div className="receipt-head">
-                  <span className="receipt-title">{r.success ? r.label : `${r.label} (reverted)`}</span>
+                  <span className="receipt-title">{r.success === false ? `${r.label} (reverted)` : r.label}</span>
                   <AddressLink address={r.txHash} kind="tx" />
                 </div>
                 <dl className="receipt-grid">
@@ -186,7 +204,7 @@ export default function App() {
 
         <section className="stats" aria-label="Paymaster totals">
           <div className="stat">
-            <span className="stat-value">{stats ? stats.ops.toLocaleString('en-US') : '—'}</span>
+            <span className="stat-value">{stats ? Number(stats.ops).toLocaleString('en-US') : '—'}</span>
             <span className="stat-label">transactions sponsored</span>
           </div>
           <div className="stat">
@@ -198,6 +216,11 @@ export default function App() {
             <span className="stat-label">$WIF burned</span>
           </div>
         </section>
+        {stats && stats.queuedBurn > 0n && (
+          <p className="hint center">
+            Burns settle in batches with <span className="mono">WIF.burn()</span>: {fmtWif(stats.queuedBurn)} $WIF is queued for the next one.
+          </p>
+        )}
 
         <details className="builders">
           <summary>Add $WIF gas to your app</summary>

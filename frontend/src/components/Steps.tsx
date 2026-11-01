@@ -4,16 +4,24 @@ import { WIF_TOKEN } from '../config'
 import { erc20Abi } from '../lib/abi'
 import { fmtWif, isAddress } from '../lib/format'
 import { SEND_GAS, SETUP_GAS, type Balances, type PaymasterStatus } from '../lib/hooks'
-import { enableWifGas, friendlyError, sendWif, type SmartClient, type Sponsored } from '../lib/smart'
+import { friendlyError } from '../lib/errors'
+import type { SmartClient, Sponsored } from '../lib/smart'
 import type { Owner } from '../lib/wallet'
 import { publicClient } from '../lib/wallet'
 import { Button, Copy, Notice } from './ui'
 
 type StepProps = {
   client: SmartClient
+  owner: Owner
   balances: Balances & { refresh: () => Promise<void> }
   paymaster: PaymasterStatus
+  blocked: boolean // a daily limit is reached
   onDone: (result: Sponsored & { label: string }) => void
+}
+
+function SignNote({ owner }: { owner: Owner }) {
+  if (owner.kind !== 'wallet') return null
+  return <p className="hint">Your wallet will ask you to sign a message. That signature approves this transaction; it costs no ETH.</p>
 }
 
 function parseAmount(text: string) {
@@ -90,7 +98,7 @@ export function FundStep({ client, owner, balances }: { client: SmartClient; own
   )
 }
 
-export function EnableStep({ client, balances, paymaster, onDone }: StepProps) {
+export function EnableStep({ client, owner, balances, paymaster, blocked, onDone }: StepProps) {
   const [busy, setBusy] = useState<string | false>(false)
   const [error, setError] = useState('')
   const fee = feeFor(paymaster, SETUP_GAS)
@@ -99,6 +107,7 @@ export function EnableStep({ client, balances, paymaster, onDone }: StepProps) {
     setError('')
     setBusy('Sign to continue…')
     try {
+      const { enableWifGas } = await import('../lib/smart')
       const result = await enableWifGas(client, () => setBusy('Confirming on Robinhood Chain…'))
       await balances.refresh()
       onDone({ ...result, label: 'Turned on $WIF gas' })
@@ -116,13 +125,14 @@ export function EnableStep({ client, balances, paymaster, onDone }: StepProps) {
         <span>Gas</span>
         <span><b>≈ {fmtWif(fee, 4)} $WIF</b> · 0 ETH</span>
       </div>
-      <Button onClick={enable} busy={busy} disabled={!paymaster.live}>Turn on $WIF gas</Button>
+      <Button onClick={enable} busy={busy} disabled={!paymaster.live || blocked}>Turn on $WIF gas</Button>
+      <SignNote owner={owner} />
       {error && <Notice tone="error">{error}</Notice>}
     </div>
   )
 }
 
-export function SendStep({ client, balances, paymaster, onDone }: StepProps) {
+export function SendStep({ client, owner, balances, paymaster, blocked, onDone }: StepProps) {
   const [to, setTo] = useState('')
   const [amount, setAmount] = useState('')
   const [busy, setBusy] = useState<string | false>(false)
@@ -139,6 +149,7 @@ export function SendStep({ client, balances, paymaster, onDone }: StepProps) {
     setError('')
     setBusy('Sign to continue…')
     try {
+      const { sendWif } = await import('../lib/smart')
       const result = await sendWif(client, to.trim() as Address, value, () => setBusy('Confirming on Robinhood Chain…'))
       await balances.refresh()
       onDone({ ...result, label: `Sent ${fmtWif(value, 4)} $WIF` })
@@ -165,7 +176,8 @@ export function SendStep({ client, balances, paymaster, onDone }: StepProps) {
         <span>Gas</span>
         <span><b>≈ {fmtWif(fee, 4)} $WIF</b> · 0 ETH</span>
       </div>
-      <Button type="submit" busy={busy} disabled={!paymaster.live}>Send $WIF</Button>
+      <Button type="submit" busy={busy} disabled={!paymaster.live || blocked}>Send $WIF</Button>
+      <SignNote owner={owner} />
       {error && <Notice tone="error">{error}</Notice>}
     </form>
   )

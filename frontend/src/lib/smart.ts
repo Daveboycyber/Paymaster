@@ -1,4 +1,4 @@
-import { encodeFunctionData, http, maxUint256, parseEventLogs, toFunctionSelector, type Address, type Hex } from 'viem'
+import { encodeAbiParameters, encodeFunctionData, http, maxUint256, parseEventLogs, type Address, type Hex } from 'viem'
 import { createSmartAccountClient } from 'permissionless'
 import { toSimpleSmartAccount } from 'permissionless/accounts'
 import { createPimlicoClient } from 'permissionless/clients/pimlico'
@@ -10,12 +10,35 @@ import { publicClient, type Owner } from './wallet'
 
 const entryPoint = { address: ENTRY_POINT, version: '0.7' } as const
 
-// The WIF paymaster needs no signature or API: only its address and gas limits
-const paymasterFields = {
+// Headroom over the quote for the signed maxWif cap, in case the keeper updates the rate before inclusion
+const MAX_WIF_HEADROOM_BPS = 1_000n
+
+const paymasterGas = {
   paymaster: PAYMASTER,
-  paymasterData: '0x' as Hex,
   paymasterVerificationGasLimit: PAYMASTER_VERIFICATION_GAS,
   paymasterPostOpGasLimit: PAYMASTER_POST_OP_GAS,
+}
+
+const encodeMaxWif = (maxWif: bigint) => encodeAbiParameters([{ type: 'uint256' }], [maxWif])
+
+type GasFields = {
+  callGasLimit?: bigint
+  verificationGasLimit?: bigint
+  preVerificationGas?: bigint
+  maxFeePerGas?: bigint
+}
+
+/**
+ * The paymaster needs no API or signature, only its address and gas limits. We also sign a maxWif cap:
+ * the most this op may cost in $WIF, so nobody can raise the price after the user signs.
+ */
+async function paymasterData(op: GasFields) {
+  const gas =
+    (op.callGasLimit ?? 0n) + (op.verificationGasLimit ?? 0n) + (op.preVerificationGas ?? 0n) +
+    PAYMASTER_VERIFICATION_GAS + PAYMASTER_POST_OP_GAS
+  const maxCost = gas * (op.maxFeePerGas ?? 0n)
+  const quote = await publicClient.readContract({ address: PAYMASTER, abi: paymasterAbi, functionName: 'quoteWif', args: [maxCost] })
+  return { ...paymasterGas, paymasterData: encodeMaxWif((quote * (10_000n + MAX_WIF_HEADROOM_BPS)) / 10_000n) }
 }
 
 const bundler = createPimlicoClient({ transport: http(BUNDLER_URL), entryPoint })
@@ -41,8 +64,9 @@ export async function makeSmartClient(owner: Owner) {
     chain: robinhood,
     bundlerTransport: http(BUNDLER_URL),
     paymaster: {
-      getPaymasterStubData: async () => ({ ...paymasterFields, isFinal: true }),
-      getPaymasterData: async () => paymasterFields,
+      // Same length as the real data, so gas estimation matches
+      getPaymasterStubData: async () => ({ ...paymasterGas, paymasterData: encodeMaxWif(maxUint256) }),
+      getPaymasterData: (op) => paymasterData(op),
     },
     userOperation: { estimateFeesPerGas: feesPerGas },
   })
@@ -81,24 +105,4 @@ export function enableWifGas(client: SmartClient, onSubmitted?: () => void) {
 export function sendWif(client: SmartClient, to: Address, amount: bigint, onSubmitted?: () => void) {
   const data = encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [to, amount] })
   return send(client, { to: WIF_TOKEN, data }, onSubmitted)
-}
-
-const KNOWN_ERRORS: [string, string][] = [
-  [toFunctionSelector('InsufficientWifBalance()'), 'Not enough $WIF in your account to cover gas.'],
-  [toFunctionSelector('InsufficientWifAllowance()'), 'Turn on $WIF gas first.'],
-  [toFunctionSelector('ExceedsMaxGasCost()'), 'This transaction is above the paymaster’s per-transaction gas cap.'],
-  [toFunctionSelector('DailyLimitExceeded()'), 'The paymaster hit its daily limit. Try again tomorrow.'],
-  [toFunctionSelector('ProviderPaused()'), 'The paymaster is paused right now.'],
-  ['AA32', 'The $WIF price expired. The paymaster needs a rate update, try again soon.'],
-  ['AA31', 'The paymaster is out of ETH to sponsor gas.'],
-  ['AA33', 'The paymaster rejected this transaction.'],
-]
-
-export function friendlyError(err: unknown): string {
-  const text = String((err as { details?: string })?.details ?? '') + ' ' + String((err as Error)?.message ?? err)
-  if (/user rejected|denied|4001/i.test(text)) return 'Request cancelled in your wallet.'
-  for (const [needle, message] of KNOWN_ERRORS) {
-    if (text.toLowerCase().includes(needle.toLowerCase().replace(/^0x/, ''))) return message
-  }
-  return (err as { shortMessage?: string })?.shortMessage ?? 'Something went wrong. Please try again.'
 }

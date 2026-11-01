@@ -6,6 +6,21 @@ export const paymasterAbi = [
   { type: 'function', name: 'rateProvider', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
   { type: 'function', name: 'burnBps', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'premiumBps', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'pendingBurn', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint128' }] },
+  {
+    type: 'function', name: 'totals', stateMutability: 'view', inputs: [],
+    outputs: [{ name: 'ops', type: 'uint64' }, { name: 'wifCharged', type: 'uint96' }, { name: 'wifBurned', type: 'uint96' }],
+  },
+  {
+    type: 'function', name: 'daily', stateMutability: 'view', inputs: [],
+    outputs: [{ name: 'spentWei', type: 'uint128' }, { name: 'start', type: 'uint64' }],
+  },
+  {
+    type: 'function', name: 'accountWindow', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ name: 'spentWei', type: 'uint128' }, { name: 'start', type: 'uint64' }],
+  },
+  { type: 'function', name: 'dailyLimitWei', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'accountDailyLimitWei', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   {
     type: 'event',
     name: 'UserOpSponsored',
