@@ -4,26 +4,39 @@ pragma solidity ^0.8.24;
 import {IPaymaster} from "account-abstraction/interfaces/IPaymaster.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
+import {UserOperationLib} from "account-abstraction/core/UserOperationLib.sol";
+import {_packValidationData} from "account-abstraction/core/Helpers.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IRateProvider} from "./interfaces/IRateProvider.sol";
-import {IERC20} from "forge-std/interfaces/IERC20.sol";
 
 /**
  * @title WIFPaymaster
- * @notice ERC-4337 Paymaster that lets users pay gas in $WIF on Robinhood Chain.
+ * @notice ERC-4337 (EntryPoint v0.7) Paymaster that lets users pay gas in $WIF on Robinhood Chain.
  *
  * Flow:
  * 1. User submits UserOp with this paymaster.
- * 2. validatePaymasterUserOp calculates required WIF (gas cost * rate * premium).
- * 3. Checks user balance + allowance + hard caps.
- * 4. postOp pulls WIF, burns a portion, sends rest to treasury.
+ * 2. validatePaymasterUserOp prices maxCost in WIF (rate * premium) and pulls that prefund from the user.
+ * 3. The UserOp executes. Whatever it does (revoke allowance, spend its WIF, revert) cannot dodge the fee.
+ * 4. postOp charges the actual cost, refunds the rest, burns a portion and sends the remainder to treasury.
+ *
+ * ERC-7562 (bundler validation rules):
+ * - Validation never reads block.timestamp. Rate expiry is returned as validUntil and enforced by the EntryPoint.
+ * - Validation reads the rate provider and writes token storage, so the paymaster must be staked.
+ *
+ * Optional user protection: paymasterAndData may carry a uint256 maxWif after the gas limits
+ * ([paymaster | verificationGas | postOpGas | maxWif]). It is covered by the user's signature, so the
+ * owner cannot raise the rate or premium above what the user agreed to.
  *
  * Safety:
  * - Hard per-tx ETH cost cap
- * - Daily global sponsorship limit
- * - Bounded rate from RateProvider
- * - Requires explicit WIF allowance
+ * - Daily global sponsorship limit (counted on actual cost)
+ * - Bounded rate from RateProvider with expiry
+ * - Fee is collected for reverted UserOps too, so the deposit cannot be drained for free
  */
 contract WIFPaymaster is IPaymaster {
+    using SafeERC20 for IERC20;
+
     IEntryPoint public immutable entryPoint;
     IERC20 public immutable wif;
     IRateProvider public rateProvider;
@@ -37,6 +50,7 @@ contract WIFPaymaster is IPaymaster {
     uint256 public burnBps = 3000;             // 30% of collected WIF is burned
     uint256 public maxGasCostWei = 0.02 ether; // hard per-tx cap (~$50 at $2500 ETH)
     uint256 public dailyLimitWei = 1 ether;    // global daily sponsorship limit
+    uint256 public postOpGasOverhead = 120_000; // postOp gas (~90k) + EntryPoint unused-gas penalty, excluded from actualGasCost
 
     // State
     uint256 public dailySpentWei;
@@ -52,16 +66,17 @@ contract WIFPaymaster is IPaymaster {
     );
     event ConfigUpdated(string param, uint256 value);
     event RateProviderUpdated(address newProvider);
+    event TreasuryUpdated(address newTreasury);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // Errors
     error OnlyEntryPoint();
     error OnlyOwner();
-    error RateProviderUnhealthy();
     error ExceedsMaxGasCost();
     error DailyLimitExceeded();
     error InsufficientWifBalance();
     error InsufficientWifAllowance();
+    error WifCostAboveUserLimit();
     error ZeroAddress();
     error InvalidBps();
 
@@ -95,93 +110,108 @@ contract WIFPaymaster is IPaymaster {
     // ============ ERC-4337 required functions ============
 
     /**
-     * @notice Called by EntryPoint during validation.
-     * @return context Encoded data passed to postOp (sender, ethCost, wifAmount)
-     * @return validationData 0 = success (valid until max uint48, aggregator = 0)
+     * @notice Called by EntryPoint during validation. Pulls the maximum WIF fee up front.
+     * @return context Encoded data passed to postOp (sender, prefund, rate, userOpHash)
+     * @return validationData validUntil = rate expiry, no aggregator
      */
     function validatePaymasterUserOp(
         PackedUserOperation calldata userOp,
         bytes32 userOpHash,
         uint256 maxCost
     ) external onlyEntryPoint returns (bytes memory context, uint256 validationData) {
-        // 1. Check rate provider is healthy
-        if (!rateProvider.isHealthy()) revert RateProviderUnhealthy();
-
-        // 2. Enforce hard per-tx cap
+        // 1. Enforce hard per-tx cap
         if (maxCost > maxGasCostWei) revert ExceedsMaxGasCost();
 
-        // 3. Enforce daily limit (simple rolling 24h)
-        _updateDailyLimit(maxCost);
+        // 2. Enforce daily limit (the window rolls in postOp, where timestamps are allowed)
+        if (dailySpentWei + maxCost > dailyLimitWei) revert DailyLimitExceeded();
 
-        // 4. Calculate required WIF
-        uint256 baseWif = rateProvider.getWifForEth(maxCost);
-        uint256 wifRequired = (baseWif * (10_000 + premiumBps)) / 10_000;
+        // 3. Price the worst case in WIF. Reverts if the provider is paused.
+        (uint256 wifPerEth, uint48 validUntil) = rateProvider.quote();
+        uint256 prefund = _wifFor(maxCost, wifPerEth);
 
-        // 5. Check user has enough WIF + allowance
+        // 4. Respect the user's signed cap, if any
+        bytes calldata pmData = userOp.paymasterAndData;
+        uint256 offset = UserOperationLib.PAYMASTER_DATA_OFFSET;
+        if (pmData.length >= offset + 32) {
+            uint256 maxWif = uint256(bytes32(pmData[offset:offset + 32]));
+            if (prefund > maxWif) revert WifCostAboveUserLimit();
+        }
+
+        // 5. Pull the prefund now, so nothing the UserOp does can avoid payment
         address sender = userOp.sender;
-        if (wif.balanceOf(sender) < wifRequired) revert InsufficientWifBalance();
-        if (wif.allowance(sender, address(this)) < wifRequired) revert InsufficientWifAllowance();
+        if (wif.balanceOf(sender) < prefund) revert InsufficientWifBalance();
+        if (wif.allowance(sender, address(this)) < prefund) revert InsufficientWifAllowance();
+        wif.safeTransferFrom(sender, address(this), prefund);
 
-        // 6. Pack context for postOp
-        context = abi.encode(sender, maxCost, wifRequired, userOpHash);
-        validationData = 0; // valid indefinitely, no aggregator
+        context = abi.encode(sender, prefund, wifPerEth, userOpHash);
+        validationData = _packValidationData(false, validUntil, 0);
     }
 
     /**
      * @notice Called by EntryPoint after the UserOp executes (or reverts).
-     *         We only charge on successful execution (mode == opSucceeded).
+     *         Charges the actual cost in both cases and refunds the unused prefund.
      */
     function postOp(
-        PostOpMode mode,
+        PostOpMode, // charged whether the UserOp succeeded or reverted
         bytes calldata context,
         uint256 actualGasCost,
-        uint256 // actualUserOpFeePerGas - unused
+        uint256 actualUserOpFeePerGas
     ) external onlyEntryPoint {
-        // Only charge on success. On failure we could still charge a small amount,
-        // but for better UX we refund the full pre-charge conceptually by not pulling.
-        if (mode != PostOpMode.opSucceeded) {
-            return;
-        }
-
-        (address sender, uint256 maxCost, uint256 wifRequired, bytes32 userOpHash) =
+        (address sender, uint256 prefund, uint256 wifPerEth, bytes32 userOpHash) =
             abi.decode(context, (address, uint256, uint256, bytes32));
 
-        // Recalculate with actual cost for fairness (still apply premium)
-        uint256 baseWif = rateProvider.getWifForEth(actualGasCost);
-        uint256 wifToCharge = (baseWif * (10_000 + premiumBps)) / 10_000;
-
-        // Cap at what we pre-validated
-        if (wifToCharge > wifRequired) {
-            wifToCharge = wifRequired;
+        // Use the rate the user was validated against, so postOp cannot fail on a stale provider
+        uint256 ethCost = actualGasCost + postOpGasOverhead * actualUserOpFeePerGas;
+        uint256 wifToCharge = _wifFor(ethCost, wifPerEth);
+        if (wifToCharge > prefund) {
+            wifToCharge = prefund;
         }
 
-        // Pull WIF from user
-        bool success = wif.transferFrom(sender, address(this), wifToCharge);
-        require(success, "WIF transfer failed");
+        _recordSpend(ethCost);
+
+        uint256 refund = prefund - wifToCharge;
+        if (refund > 0) {
+            wif.safeTransfer(sender, refund);
+        }
 
         // Burn portion
         uint256 toBurn = (wifToCharge * burnBps) / 10_000;
         if (toBurn > 0) {
-            wif.transfer(BURN_ADDRESS, toBurn);
+            wif.safeTransfer(BURN_ADDRESS, toBurn);
         }
 
         // Rest to treasury
         uint256 toTreasury = wifToCharge - toBurn;
         if (toTreasury > 0) {
-            wif.transfer(treasury, toTreasury);
+            wif.safeTransfer(treasury, toTreasury);
         }
 
-        emit UserOpSponsored(sender, userOpHash, actualGasCost, wifToCharge, toBurn);
+        emit UserOpSponsored(sender, userOpHash, ethCost, wifToCharge, toBurn);
     }
 
-    // ============ Internal ============
+    /// @notice WIF (with premium) charged for `ethAmount` wei of gas at the current rate. For UIs.
+    function quoteWif(uint256 ethAmount) external view returns (uint256) {
+        (uint256 wifPerEth,) = rateProvider.quote();
+        return _wifFor(ethAmount, wifPerEth);
+    }
 
-    function _updateDailyLimit(uint256 cost) internal {
+    /// @notice Starts a new daily window if the current one has ended. Anyone can call it, so a full
+    ///         window never stays blocked just because no UserOp could pass validation to roll it.
+    function rollDailyWindow() public {
         if (block.timestamp >= lastDayTimestamp + 1 days) {
             dailySpentWei = 0;
             lastDayTimestamp = block.timestamp;
         }
-        if (dailySpentWei + cost > dailyLimitWei) revert DailyLimitExceeded();
+    }
+
+    // ============ Internal ============
+
+    function _wifFor(uint256 ethAmount, uint256 wifPerEth) internal view returns (uint256) {
+        return (ethAmount * wifPerEth * (10_000 + premiumBps)) / (1e18 * 10_000);
+    }
+
+    function _recordSpend(uint256 cost) internal {
+        rollDailyWindow();
         dailySpentWei += cost;
     }
 
@@ -209,6 +239,11 @@ contract WIFPaymaster is IPaymaster {
         emit ConfigUpdated("dailyLimitWei", _limit);
     }
 
+    function setPostOpGasOverhead(uint256 _gas) external onlyOwner {
+        postOpGasOverhead = _gas;
+        emit ConfigUpdated("postOpGasOverhead", _gas);
+    }
+
     function setRateProvider(IRateProvider _provider) external onlyOwner {
         if (address(_provider) == address(0)) revert ZeroAddress();
         rateProvider = _provider;
@@ -218,6 +253,7 @@ contract WIFPaymaster is IPaymaster {
     function setTreasury(address _treasury) external onlyOwner {
         if (_treasury == address(0)) revert ZeroAddress();
         treasury = _treasury;
+        emit TreasuryUpdated(_treasury);
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
@@ -237,12 +273,12 @@ contract WIFPaymaster is IPaymaster {
         entryPoint.withdrawTo(to, amount);
     }
 
-    // Emergency: withdraw any stuck WIF
+    // Emergency: withdraw any stuck WIF (prefunds only sit here inside a bundle, never between txs)
     function rescueWif(address to, uint256 amount) external onlyOwner {
-        wif.transfer(to, amount);
+        wif.safeTransfer(to, amount);
     }
 
-    // Required by some interfaces / for stake
+    // Bundlers require a stake because validation touches storage outside the sender
     function addStake(uint32 unstakeDelaySec) external payable onlyOwner {
         entryPoint.addStake{value: msg.value}(unstakeDelaySec);
     }

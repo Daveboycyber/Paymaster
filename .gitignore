@@ -2,7 +2,6 @@
 cache/
 out/
 broadcast/
-lib/ # optional - we keep them for now
 
 # IDE
 .idea/

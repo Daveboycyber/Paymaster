@@ -41,12 +41,16 @@ Bundler (Alchemy)
     ▼
 EntryPoint (v0.7)
     │
-    ├── validatePaymasterUserOp()  →  checks rate, caps, balance, allowance
+    ├── validatePaymasterUserOp()  →  checks caps, prices maxCost in $WIF, pulls that prefund
+    │                                   returns validUntil = rate expiry (EntryPoint enforces it)
     │
     ├── execute UserOp (e.g. send 1 $WIF to vote address)
     │
-    └── postOp()  →  pulls $WIF, burns %, sends rest to treasury
+    └── postOp()  →  charges actual cost, refunds the rest, burns %, sends rest to treasury
 ```
+
+The fee is taken up front, so nothing the UserOp does (reverting, revoking the allowance, spending
+its $WIF) can leave the paymaster paying gas for free. Reverted UserOps still pay for the gas they used.
 
 ### Key Contracts
 
@@ -59,9 +63,12 @@ EntryPoint (v0.7)
 ### Safety Features
 
 - Hard per-transaction gas cost cap (default 0.02 ETH)
-- Global daily sponsorship limit
-- Bounded rate (cannot be manipulated via thin pool)
-- Explicit $WIF allowance required
+- Global daily sponsorship limit, counted on actual cost
+- Bounded rate (cannot be manipulated via thin pool) that expires 6h after the last update
+- Prefund + refund: reverted or allowance-revoking UserOps cannot drain the deposit
+- Optional user-signed `maxWif` cap, so the owner cannot raise the price on a pending UserOp
+- ERC-7562 compliant validation (no `block.timestamp`); paymaster must be staked
+- Keeper role so a bot can refresh the rate without the owner key
 - Configurable premium + burn percentage
 - Circuit breaker on rate provider
 
@@ -74,7 +81,7 @@ EntryPoint (v0.7)
 ```bash
 git clone https://github.com/Daveboycyber/Paymaster.git
 cd Paymaster
-forge install
+git submodule update --init --recursive
 ```
 
 ### 2. Test
@@ -89,15 +96,20 @@ forge test -vv
 export PRIVATE_KEY=0x...
 export TREASURY=0xYourTreasury
 export INITIAL_WIF_PER_ETH=2000000000000000000000000
+# optional
+export KEEPER=0xYourRateBot
+export DEPOSIT_WEI=100000000000000000   # 0.1 ETH to sponsor gas
+export STAKE_WEI=100000000000000000     # stake required by bundlers
 
 forge script script/Deploy.s.sol:Deploy \
   --rpc-url https://rpc.mainnet.chain.robinhood.com \
   --broadcast
 ```
 
-After deploy:
+After deploy (skip what the optional env vars already did):
 1. Call `depositToEntryPoint{value: X ether}()` so the paymaster has ETH to sponsor with.
-2. (Optional) Call `addStake()` if required by bundlers.
+2. Call `addStake{value: X ether}(86400)`. Bundlers reject unstaked paymasters whose validation reads other storage.
+3. Keep the rate fresh: `setRate()` from the owner or keeper at least every 6 hours, or UserOps fail with `AA32`.
 
 ---
 
@@ -108,7 +120,11 @@ setPremiumBps(1500);      // 15% premium
 setBurnBps(3000);         // 30% burned
 setMaxGasCostWei(0.02e18);
 setDailyLimitWei(1e18);
+setPostOpGasOverhead(120_000);
 setRateProvider(newProvider);
+// on BoundedRateProvider
+setKeeper(bot);
+setRate(newWifPerEth);
 ```
 
 ---
@@ -130,6 +146,17 @@ const userOp = await smartAccount.encodeUserOp({
 await wif.approve("0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE", MaxUint256);
 ```
 
+`paymasterAndData` layout (EntryPoint v0.7):
+
+| Bytes | Field |
+|-------|-------|
+| 0-20 | paymaster address |
+| 20-36 | paymaster verification gas limit (~100k) |
+| 36-52 | paymaster postOp gas limit (use 150k, postOp needs ~90k) |
+| 52-84 | optional `maxWif` (uint256): reject if the fee could exceed this |
+
+Use `quoteWif(maxCost)` on the paymaster to show the user the price before signing.
+
 ---
 
 ## Roadmap / Next Steps
@@ -139,6 +166,8 @@ await wif.approve("0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE", MaxUint256);
 - [ ] One-click “Enable gas payment with $WIF” button
 - [ ] Dashboard of total $WIF collected / burned
 - [ ] Optional EIP-7702 support path
+- [x] Prefund/refund, ERC-7562 compliant validation, keeper role
+- [ ] Redeploy contracts with the fixes and stake the paymaster
 - [ ] Production TWAP + Chainlink rate provider (post-hackathon)
 
 ---

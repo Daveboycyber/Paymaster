@@ -8,9 +8,11 @@ import {IRateProvider} from "./interfaces/IRateProvider.sol";
  * @notice Simple, safe rate provider for the hackathon.
  *         Uses a manually set rate with hard bounds + circuit breaker.
  *         For thin liquidity this is safer than a raw pool TWAP.
+ *         A keeper (e.g. a bot) can refresh the rate without holding the owner key.
  */
 contract BoundedRateProvider is IRateProvider {
     address public owner;
+    address public keeper;
 
     // Rate: how many WIF (1e18) equal 1 ETH (1e18)
     uint256 public wifPerEth;
@@ -26,8 +28,10 @@ contract BoundedRateProvider is IRateProvider {
     event BoundsUpdated(uint256 minRate, uint256 maxRate);
     event Paused(bool isPaused);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event KeeperUpdated(address indexed keeper);
 
     error NotOwner();
+    error NotOwnerOrKeeper();
     error RateOutOfBounds();
     error ProviderPaused();
     error RateStale();
@@ -35,6 +39,11 @@ contract BoundedRateProvider is IRateProvider {
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
+    modifier onlyOwnerOrKeeper() {
+        if (msg.sender != owner && msg.sender != keeper) revert NotOwnerOrKeeper();
         _;
     }
 
@@ -47,6 +56,12 @@ contract BoundedRateProvider is IRateProvider {
         lastUpdateTimestamp = block.timestamp;
     }
 
+    /// @inheritdoc IRateProvider
+    function quote() external view override returns (uint256, uint48) {
+        if (paused) revert ProviderPaused();
+        return (wifPerEth, uint48(lastUpdateTimestamp + MAX_UPDATE_AGE));
+    }
+
     function getWifForEth(uint256 ethAmount) external view override returns (uint256) {
         if (paused) revert ProviderPaused();
         if (block.timestamp > lastUpdateTimestamp + MAX_UPDATE_AGE) revert RateStale();
@@ -57,7 +72,7 @@ contract BoundedRateProvider is IRateProvider {
         return !paused && block.timestamp <= lastUpdateTimestamp + MAX_UPDATE_AGE;
     }
 
-    function setRate(uint256 newWifPerEth) external onlyOwner {
+    function setRate(uint256 newWifPerEth) external onlyOwnerOrKeeper {
         if (newWifPerEth < minWifPerEth || newWifPerEth > maxWifPerEth) {
             revert RateOutOfBounds();
         }
@@ -79,6 +94,11 @@ contract BoundedRateProvider is IRateProvider {
     function setPaused(bool _paused) external onlyOwner {
         paused = _paused;
         emit Paused(_paused);
+    }
+
+    function setKeeper(address _keeper) external onlyOwner {
+        keeper = _keeper;
+        emit KeeperUpdated(_keeper);
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
