@@ -41,6 +41,13 @@ contract MockWIF {
         return true;
     }
 
+    function burn(uint256 amount) external {
+        require(balanceOf[msg.sender] >= amount, "insufficient balance");
+        balanceOf[msg.sender] -= amount;
+        totalSupply -= amount;
+        emit Transfer(msg.sender, address(0), amount);
+    }
+
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
     }
