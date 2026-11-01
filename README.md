@@ -12,9 +12,9 @@ Built for the [World is Flat Hackathon](https://worldisflat.fun/build).
 
 | Contract | Address |
 |----------|---------|
-| **WIFPaymaster** | [`0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE`](https://explorer.robinhood.com/address/0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE) |
-| **BoundedRateProvider** | [`0x3A040be5ee7829A38943294DFC6116Bf095eF497`](https://explorer.robinhood.com/address/0x3A040be5ee7829A38943294DFC6116Bf095eF497) |
-| **$WIF Token** | [`0x5173b8eA6923c2d40267890D45C46a3480954773`](https://explorer.robinhood.com/address/0x5173b8eA6923c2d40267890D45C46a3480954773) |
+| **WIFPaymaster** | [`0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE`](https://robinhoodchain.blockscout.com/address/0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE) |
+| **BoundedRateProvider** | [`0x3A040be5ee7829A38943294DFC6116Bf095eF497`](https://robinhoodchain.blockscout.com/address/0x3A040be5ee7829A38943294DFC6116Bf095eF497) |
+| **$WIF Token** | [`0x5173b8eA6923c2d40267890D45C46a3480954773`](https://robinhoodchain.blockscout.com/address/0x5173b8eA6923c2d40267890D45C46a3480954773) |
 | **EntryPoint v0.7** | `0x0000000071727De22E5E9d8BAf0edAc6f37da032` |
 
 ---
@@ -142,8 +142,9 @@ const userOp = await smartAccount.encodeUserOp({
   }
 });
 
-// User must have approved the paymaster for $WIF beforehand
-await wif.approve("0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE", MaxUint256);
+// First op of a new account (it can't pay gas to approve): send exactly
+// execute(WIF, 0, approve(paymaster, MaxUint256)). The paymaster sponsors that one
+// setup op per account, deploys the account via initCode, and charges the fee in $WIF.
 ```
 
 `paymasterAndData` layout (EntryPoint v0.7):
@@ -167,6 +168,7 @@ Use `quoteWif(maxCost)` on the paymaster to show the user the price before signi
 - [ ] Dashboard of total $WIF collected / burned
 - [ ] Optional EIP-7702 support path
 - [x] Prefund/refund, ERC-7562 compliant validation, keeper role
+- [x] One sponsored setup op per account, so a brand-new account needs zero ETH
 - [ ] Redeploy contracts with the fixes and stake the paymaster
 - [ ] Production TWAP + Chainlink rate provider (post-hackathon)
 

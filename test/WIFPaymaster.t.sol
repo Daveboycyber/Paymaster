@@ -180,6 +180,80 @@ contract WIFPaymasterTest is Test {
         paymaster.validatePaymasterUserOp(_userOp(user), bytes32(0), 0.01 ether);
     }
 
+    function _approveCall(address spender, uint256 amount) internal view returns (bytes memory) {
+        return abi.encodeWithSelector(
+            bytes4(0xb61d27f6), address(wif), uint256(0), abi.encodeCall(IERC20.approve, (spender, amount))
+        );
+    }
+
+    function test_SetupOpChargedInPostOp() public {
+        address fresh = makeAddr("fresh");
+        wif.transfer(fresh, 50_000 ether);
+        PackedUserOperation memory userOp = _userOp(fresh);
+        userOp.callData = _approveCall(address(paymaster), type(uint256).max);
+
+        vm.prank(address(entryPoint));
+        (bytes memory context,) = paymaster.validatePaymasterUserOp(userOp, bytes32(0), 0.01 ether);
+        assertEq(wif.balanceOf(fresh), 50_000 ether, "nothing pulled before the approve runs");
+        assertTrue(paymaster.setupUsed(fresh));
+
+        vm.prank(fresh); // what execute() does
+        wif.approve(address(paymaster), type(uint256).max);
+        vm.prank(address(entryPoint));
+        paymaster.postOp(IPaymaster.PostOpMode.opSucceeded, context, 0.002 ether, 0);
+
+        assertEq(50_000 ether - wif.balanceOf(fresh), _wifFor(0.002 ether));
+        assertEq(wif.balanceOf(address(paymaster)), 0);
+    }
+
+    function test_SetupOpOnlyOnce() public {
+        address fresh = makeAddr("fresh");
+        wif.transfer(fresh, 50_000 ether);
+        PackedUserOperation memory userOp = _userOp(fresh);
+        userOp.callData = _approveCall(address(paymaster), type(uint256).max);
+
+        vm.startPrank(address(entryPoint));
+        paymaster.validatePaymasterUserOp(userOp, bytes32(0), 0.01 ether);
+        vm.expectRevert(WIFPaymaster.InsufficientWifAllowance.selector);
+        paymaster.validatePaymasterUserOp(userOp, bytes32(0), 0.01 ether);
+        vm.stopPrank();
+    }
+
+    function test_SetupOpRejectsOtherCalls() public {
+        address fresh = makeAddr("fresh");
+        wif.transfer(fresh, 50_000 ether);
+        PackedUserOperation memory userOp = _userOp(fresh);
+        bytes[3] memory bad = [
+            _approveCall(makeAddr("other"), type(uint256).max), // approves someone else
+            _approveCall(address(paymaster), 1), // approves less than the fee
+            abi.encodeWithSelector(bytes4(0xb61d27f6), address(wif), uint256(0), abi.encodeCall(IERC20.transfer, (address(paymaster), 1)))
+        ];
+        for (uint256 i; i < bad.length; i++) {
+            userOp.callData = bad[i];
+            vm.prank(address(entryPoint));
+            vm.expectRevert(WIFPaymaster.InsufficientWifAllowance.selector);
+            paymaster.validatePaymasterUserOp(userOp, bytes32(0), 0.01 ether);
+        }
+    }
+
+    function test_SetupFeeUnpaidNeverReverts() public {
+        address fresh = makeAddr("fresh");
+        wif.transfer(fresh, 50_000 ether);
+        PackedUserOperation memory userOp = _userOp(fresh);
+        userOp.callData = _approveCall(address(paymaster), type(uint256).max);
+
+        vm.prank(address(entryPoint));
+        (bytes memory context,) = paymaster.validatePaymasterUserOp(userOp, bytes32(0), 0.01 ether);
+
+        // The approve never happened (reverted op or an account that ignores execute)
+        uint256 ethCost = 0.002 ether + paymaster.postOpGasOverhead();
+        vm.expectEmit(true, true, false, true);
+        emit WIFPaymaster.SetupFeeUnpaid(fresh, bytes32(0), ethCost);
+        vm.prank(address(entryPoint));
+        paymaster.postOp(IPaymaster.PostOpMode.opReverted, context, 0.002 ether, 1);
+        assertEq(wif.balanceOf(fresh), 50_000 ether);
+    }
+
     function test_RevertWhenProviderPaused() public {
         rateProvider.setPaused(true);
 

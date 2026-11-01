@@ -20,6 +20,7 @@ contract WIFPaymasterIntegrationTest is Test {
     BoundedRateProvider rateProvider;
     MockWIF wif;
     SimpleAccount account;
+    SimpleAccountFactory factory;
 
     address owner;
     uint256 ownerKey;
@@ -42,7 +43,8 @@ contract WIFPaymasterIntegrationTest is Test {
         paymaster.depositToEntryPoint{value: 1 ether}();
         paymaster.addStake{value: 1 ether}(1 days);
 
-        account = new SimpleAccountFactory(IEntryPoint(address(entryPoint))).createAccount(owner, 0);
+        factory = new SimpleAccountFactory(IEntryPoint(address(entryPoint)));
+        account = factory.createAccount(owner, 0);
         wif.transfer(address(account), 10_000 ether);
 
         // One-time approval (in production: a sponsored first op or a batched setup)
@@ -123,6 +125,31 @@ contract WIFPaymasterIntegrationTest is Test {
         assertEq(wif.allowance(address(account), address(paymaster)), 0, "allowance revoked");
         assertGt(wifBefore - wif.balanceOf(address(account)), 0, "fee collected anyway");
         assertGt(wif.balanceOf(treasury), 0);
+    }
+
+    function test_NewAccountOnboardsWithZeroEth() public {
+        // A brand-new account: not deployed, never approved anything, holds only WIF
+        (address newOwner, uint256 newKey) = makeAddrAndKey("newOwner");
+        address sender = factory.getAddress(newOwner, 0);
+        wif.transfer(sender, 5_000 ether);
+
+        PackedUserOperation memory op;
+        op.sender = sender;
+        op.initCode = abi.encodePacked(address(factory), abi.encodeCall(SimpleAccountFactory.createAccount, (newOwner, 0)));
+        op.callData = _execute(address(wif), abi.encodeCall(IERC20.approve, (address(paymaster), type(uint256).max)));
+        op.accountGasLimits = bytes32((uint256(400_000) << 128) | 100_000);
+        op.preVerificationGas = 50_000;
+        op.gasFees = bytes32((GAS_PRICE << 128) | GAS_PRICE);
+        op.paymasterAndData = abi.encodePacked(address(paymaster), uint128(150_000), uint128(150_000));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(newKey, MessageHashUtils.toEthSignedMessageHash(entryPoint.getUserOpHash(op)));
+        op.signature = abi.encodePacked(r, s, v);
+        _handle(op);
+
+        assertGt(sender.code.length, 0, "account deployed");
+        assertEq(sender.balance, 0, "never held ETH");
+        assertEq(wif.allowance(sender, address(paymaster)), type(uint256).max, "approved for later ops");
+        assertGt(5_000 ether - wif.balanceOf(sender), 0, "setup fee paid in WIF");
+        assertTrue(paymaster.setupUsed(sender));
     }
 
     function test_StaleRateRejectedByEntryPoint() public {

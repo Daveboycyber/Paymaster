@@ -24,6 +24,11 @@ import {IRateProvider} from "./interfaces/IRateProvider.sol";
  * - Validation never reads block.timestamp. Rate expiry is returned as validUntil and enforced by the EntryPoint.
  * - Validation reads the rate provider and writes token storage, so the paymaster must be staked.
  *
+ * First op of a new account: it holds WIF but cannot approve us without gas. If the allowance is short,
+ * one op per account is accepted when its callData is exactly execute(wif, 0, approve(paymaster, >= fee)).
+ * The fee is then collected in postOp, after the approve ran. A collection failure never reverts postOp,
+ * so a fake "approve" costs us at most one op of gas per account.
+ *
  * Optional user protection: paymasterAndData may carry a uint256 maxWif after the gas limits
  * ([paymaster | verificationGas | postOpGas | maxWif]). It is covered by the user's signature, so the
  * owner cannot raise the rate or premium above what the user agreed to.
@@ -44,6 +49,7 @@ contract WIFPaymaster is IPaymaster {
     address public owner;
     address public treasury;          // receives non-burned WIF
     address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    bytes4 private constant EXECUTE_SELECTOR = 0xb61d27f6; // execute(address,uint256,bytes), e.g. SimpleAccount
 
     // Config (owner-settable)
     uint256 public premiumBps = 1500;          // 15% premium over pure gas cost
@@ -55,6 +61,7 @@ contract WIFPaymaster is IPaymaster {
     // State
     uint256 public dailySpentWei;
     uint256 public lastDayTimestamp;
+    mapping(address => bool) public setupUsed; // account already used its one approve-only op
 
     // Events
     event UserOpSponsored(
@@ -64,6 +71,7 @@ contract WIFPaymaster is IPaymaster {
         uint256 wifCharged,
         uint256 wifBurned
     );
+    event SetupFeeUnpaid(address indexed sender, bytes32 indexed userOpHash, uint256 ethCost);
     event ConfigUpdated(string param, uint256 value);
     event RateProviderUpdated(address newProvider);
     event TreasuryUpdated(address newTreasury);
@@ -111,7 +119,7 @@ contract WIFPaymaster is IPaymaster {
 
     /**
      * @notice Called by EntryPoint during validation. Pulls the maximum WIF fee up front.
-     * @return context Encoded data passed to postOp (sender, prefund, rate, userOpHash)
+     * @return context Encoded data passed to postOp (sender, prefund, rate, userOpHash, prepaid)
      * @return validationData validUntil = rate expiry, no aggregator
      */
     function validatePaymasterUserOp(
@@ -140,10 +148,16 @@ contract WIFPaymaster is IPaymaster {
         // 5. Pull the prefund now, so nothing the UserOp does can avoid payment
         address sender = userOp.sender;
         if (wif.balanceOf(sender) < prefund) revert InsufficientWifBalance();
-        if (wif.allowance(sender, address(this)) < prefund) revert InsufficientWifAllowance();
-        wif.safeTransferFrom(sender, address(this), prefund);
+        bool prepaid = wif.allowance(sender, address(this)) >= prefund;
+        if (prepaid) {
+            wif.safeTransferFrom(sender, address(this), prefund);
+        } else {
+            // One approve-only setup op per account, charged in postOp
+            if (setupUsed[sender] || !_isApproveCall(userOp.callData, prefund)) revert InsufficientWifAllowance();
+            setupUsed[sender] = true;
+        }
 
-        context = abi.encode(sender, prefund, wifPerEth, userOpHash);
+        context = abi.encode(sender, prefund, wifPerEth, userOpHash, prepaid);
         validationData = _packValidationData(false, validUntil, 0);
     }
 
@@ -157,8 +171,8 @@ contract WIFPaymaster is IPaymaster {
         uint256 actualGasCost,
         uint256 actualUserOpFeePerGas
     ) external onlyEntryPoint {
-        (address sender, uint256 prefund, uint256 wifPerEth, bytes32 userOpHash) =
-            abi.decode(context, (address, uint256, uint256, bytes32));
+        (address sender, uint256 prefund, uint256 wifPerEth, bytes32 userOpHash, bool prepaid) =
+            abi.decode(context, (address, uint256, uint256, bytes32, bool));
 
         // Use the rate the user was validated against, so postOp cannot fail on a stale provider
         uint256 ethCost = actualGasCost + postOpGasOverhead * actualUserOpFeePerGas;
@@ -169,9 +183,15 @@ contract WIFPaymaster is IPaymaster {
 
         _recordSpend(ethCost);
 
-        uint256 refund = prefund - wifToCharge;
-        if (refund > 0) {
-            wif.safeTransfer(sender, refund);
+        if (prepaid) {
+            uint256 refund = prefund - wifToCharge;
+            if (refund > 0) {
+                wif.safeTransfer(sender, refund);
+            }
+        } else if (!_tryPullWif(sender, wifToCharge)) {
+            // Setup op whose approve did not happen (reverted or fake). Never revert here.
+            emit SetupFeeUnpaid(sender, userOpHash, ethCost);
+            return;
         }
 
         // Burn portion
@@ -208,6 +228,23 @@ contract WIFPaymaster is IPaymaster {
 
     function _wifFor(uint256 ethAmount, uint256 wifPerEth) internal view returns (uint256) {
         return (ethAmount * wifPerEth * (10_000 + premiumBps)) / (1e18 * 10_000);
+    }
+
+    /// @dev True if callData is the standard ABI encoding of execute(wif, 0, approve(this, amount >= minAmount)).
+    function _isApproveCall(bytes calldata callData, uint256 minAmount) internal view returns (bool) {
+        if (callData.length != 228 || bytes4(callData[:4]) != EXECUTE_SELECTOR) return false;
+        (address target, uint256 value, uint256 offset, uint256 len) =
+            abi.decode(callData[4:132], (address, uint256, uint256, uint256));
+        if (target != address(wif) || value != 0 || offset != 0x60 || len != 68) return false;
+        if (bytes4(callData[132:136]) != IERC20.approve.selector) return false;
+        (address spender, uint256 amount) = abi.decode(callData[136:200], (address, uint256));
+        return spender == address(this) && amount >= minAmount;
+    }
+
+    function _tryPullWif(address from, uint256 amount) internal returns (bool) {
+        (bool ok, bytes memory ret) =
+            address(wif).call(abi.encodeCall(IERC20.transferFrom, (from, address(this), amount)));
+        return ok && (ret.length == 0 || (ret.length == 32 && abi.decode(ret, (bool))));
     }
 
     function _recordSpend(uint256 cost) internal {
