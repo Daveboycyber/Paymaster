@@ -113,6 +113,28 @@ After deploy (skip what the optional env vars already did):
 
 ---
 
+## Frontend demo
+
+`frontend/` is a real, zero-ETH demo: no fake hashes, every action is a UserOperation on Robinhood Chain.
+
+1. **Connect** an extension wallet (it only signs) or create a browser account. Either way you get a SimpleAccount (v0.7) smart account.
+2. **Add $WIF** to that account. It never needs ETH.
+3. **Turn on $WIF gas**: one sponsored setup op deploys the account and approves the paymaster, paid in $WIF.
+4. **Send $WIF**: every op shows the real tx, the $WIF paid as gas, the amount burned and 0 ETH used.
+
+Live totals (transactions sponsored, $WIF paid, $WIF burned) come from the paymaster's `UserOpSponsored` events.
+
+```bash
+cd frontend
+cp .env.example .env.local   # set VITE_PAYMASTER and VITE_PAYMASTER_DEPLOY_BLOCK after a redeploy
+npm install
+npm run dev
+```
+
+It uses the Pimlico public bundler for chain 4663 by default (no API key). Any ERC-4337 v0.7 bundler works via `VITE_BUNDLER_URL`.
+
+---
+
 ## Configuration (Owner)
 
 ```solidity
@@ -163,9 +185,10 @@ Use `quoteWif(maxCost)` on the paymaster to show the user the price before signi
 ## Roadmap / Next Steps
 
 - [x] Deploy contracts to Robinhood Chain
-- [ ] Frontend demo (zero-ETH wallet → real vote)
-- [ ] One-click “Enable gas payment with $WIF” button
-- [ ] Dashboard of total $WIF collected / burned
+- [x] Frontend demo with real zero-ETH transactions
+- [x] One-click “Turn on $WIF gas” button
+- [x] Live totals of $WIF paid and burned
+- [ ] Vote with $WIF through the paymaster once the hackathon vote contract is published
 - [ ] Optional EIP-7702 support path
 - [x] Prefund/refund, ERC-7562 compliant validation, keeper role
 - [x] One sponsored setup op per account, so a brand-new account needs zero ETH
