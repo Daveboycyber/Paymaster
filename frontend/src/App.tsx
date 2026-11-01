@@ -1,159 +1,281 @@
-import { useState } from 'react'
-import { PAYMASTER, RATE_PROVIDER, WIF_TOKEN, ENTRY_POINT, EXPLORER } from './constants'
+import { useEffect, useState } from 'react'
+import { BUNDLER_URL, ENTRY_POINT, PAYMASTER, PAYMASTER_POST_OP_GAS, PAYMASTER_VERIFICATION_GAS, REPO_URL, WIF_TOKEN } from './config'
+import { AddressLink, Button, Copy, Notice } from './components/ui'
+import { EnableStep, FundStep, SendStep } from './components/Steps'
+import { friendlyError } from './lib/errors'
+import { fmtEth, fmtWif, short } from './lib/format'
+import { useBalances, useHistory, useLimitReset, usePaymaster, useStats } from './lib/hooks'
+import type { SmartClient, Sponsored } from './lib/smart'
+import { browserKey, browserOwner, connectWallet, hasExtensionWallet, type Owner } from './lib/wallet'
 
-type Status = 'idle' | 'connecting' | 'ready' | 'loading' | 'success' | 'error'
+const LAST_OWNER = 'wif-paymaster:owner'
+const STEPS = ['Add $WIF', 'Turn on $WIF gas', 'Send'] as const
+
+type Receipt = Pick<Sponsored, 'txHash' | 'wifCharged' | 'wifBurned'> & { success?: boolean; label: string }
+
+function remember(kind: Owner['kind'] | null) {
+  try {
+    if (kind) localStorage.setItem(LAST_OWNER, kind)
+    else localStorage.removeItem(LAST_OWNER)
+  } catch {
+    // storage blocked: the session just won't be restored on reload
+  }
+}
 
 export default function App() {
-  const [status, setStatus] = useState<Status>('idle')
-  const [txHash, setTxHash] = useState<string | null>(null)
-  const [errorMsg, setErrorMsg] = useState('')
+  const [owner, setOwner] = useState<Owner | null>(null)
+  const [client, setClient] = useState<SmartClient | null>(null)
+  const [connecting, setConnecting] = useState<string | false>(false)
+  const [error, setError] = useState('')
+  const [receipts, setReceipts] = useState<Receipt[]>([])
 
-  const handleConnect = async () => {
-    setStatus('connecting')
-    await new Promise(r => setTimeout(r, 700))
-    setStatus('ready')
-  }
+  const account = client?.account.address
+  const balances = useBalances(account, owner?.kind === 'wallet' ? owner.address : undefined)
+  const paymaster = usePaymaster()
+  const stats = useStats(receipts.length)
+  const resetAt = useLimitReset(account, paymaster.gasPrice, receipts.length)
+  const history = useHistory(account, receipts.length)
+  // This session's receipts first (they have labels), then older ops from the chain
+  const activity: Receipt[] = [
+    ...receipts,
+    ...history
+      .filter((h) => !receipts.some((r) => r.txHash === h.txHash))
+      .map((h) => ({ ...h, label: 'Sponsored transaction' })),
+  ]
 
-  const handleVote = async () => {
-    setStatus('loading')
-    setErrorMsg('')
-    setTxHash(null)
+  const connect = async (getOwner: () => Owner | Promise<Owner>, label: string) => {
+    setError('')
+    setConnecting(label)
     try {
-      await new Promise(r => setTimeout(r, 2200))
-      const fakeHash = '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')
-      setTxHash(fakeHash)
-      setStatus('success')
-    } catch (e: any) {
-      setStatus('error')
-      setErrorMsg(e?.message || 'Transaction failed')
+      const next = await getOwner()
+      // The smart-account code loads only when someone connects
+      const { makeSmartClient } = await import('./lib/smart')
+      setClient(await makeSmartClient(next))
+      setOwner(next)
+      remember(next.kind)
+    } catch (err) {
+      setError(friendlyError(err))
+    } finally {
+      setConnecting(false)
     }
   }
 
+  // Restore the last session without prompting
+  useEffect(() => {
+    let last: string | null = null
+    try {
+      last = localStorage.getItem(LAST_OWNER)
+    } catch {
+      return
+    }
+    if (last === 'browser' && browserKey()) connect(browserOwner, 'Restoring…')
+    if (last === 'wallet' && window.ethereum) {
+      window.ethereum
+        .request({ method: 'eth_accounts' })
+        .then((accounts) => {
+          if (accounts.length) connect(connectWallet, 'Restoring…')
+        })
+        .catch(() => {})
+    }
+  }, [])
+
+  const disconnect = () => {
+    setOwner(null)
+    setClient(null)
+    setReceipts([])
+    remember(null)
+  }
+
+  const enabled = (balances.allowance ?? 0n) > 0n
+  const step = !client ? -1 : enabled ? 2 : (balances.wif ?? 0n) > 0n ? 1 : 0
+
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '48px 20px 80px' }}>
-      
-      <div style={{ width: '100%', maxWidth: 520, display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 48 }}>
-        <div style={{ fontSize: 12, letterSpacing: 2, color: 'var(--muted)', textTransform: 'uppercase' }}>
-          World is Flat · Hackathon
+    <div className="page">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden>◐</span> wif paymaster
         </div>
-        <div className="badge badge-green">Live on 4663</div>
-      </div>
-
-      <div style={{ textAlign: 'center', marginBottom: 48, maxWidth: 560 }}>
-        <div style={{ fontSize: 13, color: 'var(--green)', letterSpacing: 3, marginBottom: 16, textTransform: 'uppercase' }}>
-          Infrastructure
-        </div>
-        <h1 style={{ fontSize: 'clamp(28px, 6vw, 42px)', fontWeight: 700, lineHeight: 1.2, marginBottom: 16 }}>
-          Pay gas in <span className="glow-text">$WIF</span>
-        </h1>
-        <p style={{ color: 'var(--muted)', fontSize: 15, lineHeight: 1.6, maxWidth: 420, margin: '0 auto' }}>
-          Zero ETH required. Every transaction sponsored by the WIF Paymaster. A portion of gas is burned.
-        </p>
-      </div>
-
-      <div className="card" style={{ width: '100%', maxWidth: 440 }}>
-        
-        {status === 'idle' && (
-          <div style={{ textAlign: 'center' }}>
-            <p style={{ color: 'var(--muted)', marginBottom: 28, fontSize: 14, lineHeight: 1.5 }}>
-              Connect a smart account to experience gas payment in $WIF only.
-            </p>
-            <button className="btn" onClick={handleConnect} style={{ width: '100%' }}>
-              Connect Wallet
+        <div className="topbar-right">
+          <span className={`pill ${paymaster.live ? 'pill-live' : paymaster.live === false ? 'pill-down' : ''}`}>
+            <span className="dot" aria-hidden /> <span className="pill-text">Robinhood Chain</span>
+          </span>
+          {owner && (
+            <button type="button" className="pill pill-button" onClick={disconnect} title="Disconnect">
+              {owner.kind === 'browser' ? 'Browser account' : short(owner.address)} ✕
             </button>
-          </div>
-        )}
+          )}
+        </div>
+      </header>
 
-        {status === 'connecting' && (
-          <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--muted)', fontSize: 14 }}>
-            Connecting<span className="glow-text">_</span>
-          </div>
-        )}
+      <main className="main">
+        <section className="hero">
+          <h1>Pay gas in <span className="accent">$WIF</span>.</h1>
+          <p>
+            Your account never needs ETH. Every fee is paid in $WIF, and{' '}
+            {paymaster.burnBps != null ? `${Number(paymaster.burnBps) / 100}%` : 'part'} of it is burned.
+          </p>
+        </section>
 
-        {(status === 'ready' || status === 'loading' || status === 'success' || status === 'error') && (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 28 }}>
-              <div style={{ background: '#000', border: '1px solid var(--border)', borderRadius: 3, padding: 16 }}>
-                <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8, letterSpacing: 1, textTransform: 'uppercase' }}>ETH</div>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>0.0000</div>
-                <div className="badge badge-red" style={{ marginTop: 10 }}>Not required</div>
-              </div>
-              <div style={{ background: '#000', border: '1px solid var(--border)', borderRadius: 3, padding: 16 }}>
-                <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8, letterSpacing: 1, textTransform: 'uppercase' }}>$WIF</div>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>12,450</div>
-                <div className="badge badge-green" style={{ marginTop: 10 }}>Ready</div>
-              </div>
+        <section className="card" aria-label="Your account">
+          {paymaster.live === false && paymaster.reason && <Notice>{paymaster.reason}</Notice>}
+
+          {!client || !owner ? (
+            <div className="connect">
+              {hasExtensionWallet() ? (
+                <>
+                  <Button onClick={() => connect(connectWallet, 'Connecting…')} busy={connecting}>Connect wallet</Button>
+                  <Button variant="ghost" onClick={() => connect(browserOwner, 'Creating…')} disabled={!!connecting}>
+                    Create a browser account
+                  </Button>
+                </>
+              ) : (
+                <Button onClick={() => connect(browserOwner, 'Creating…')} busy={connecting}>Create a browser account</Button>
+              )}
+              <p className="hint">
+                {hasExtensionWallet()
+                  ? 'Your wallet only signs. A gas-free smart account is created for it.'
+                  : 'No wallet extension found. A browser account is a key kept on this device, best for small amounts.'}
+              </p>
+              {error && <Notice tone="error">{error}</Notice>}
             </div>
-
-            <button
-              className="btn"
-              style={{ width: '100%', marginBottom: 16 }}
-              onClick={handleVote}
-              disabled={status === 'loading'}
-            >
-              {status === 'loading' ? 'Submitting UserOp…' : 'Vote with only $WIF'}
-            </button>
-
-            {status === 'success' && txHash && (
-              <div style={{ background: 'rgba(57,255,20,0.05)', border: '1px solid rgba(57,255,20,0.2)', borderRadius: 3, padding: 16, textAlign: 'center' }}>
-                <div style={{ fontWeight: 700, color: 'var(--green)', marginBottom: 6, fontSize: 14 }}>Sponsored</div>
-                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
-                  Gas paid in $WIF · portion burned
+          ) : (
+            <>
+              <div className="account">
+                <div className="account-head">
+                  <span className="label">Your gas-free account</span>
+                  <span className="account-addr">
+                    <AddressLink address={client.account.address} />
+                    <Copy value={client.account.address} label="account address" />
+                  </span>
                 </div>
-                <a
-                  href={`${EXPLORER}/tx/${txHash}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mono"
-                  style={{ color: 'var(--green)' }}
-                >
-                  {txHash.slice(0, 10)}…{txHash.slice(-8)}
-                </a>
+                <div className="balances">
+                  <div className="balance">
+                    <span className="balance-value">{fmtEth(balances.eth)}</span>
+                    <span className="balance-unit">ETH</span>
+                  </div>
+                  <div className="balance balance-accent">
+                    <span className="balance-value">{fmtWif(balances.wif)}</span>
+                    <span className="balance-unit">$WIF</span>
+                  </div>
+                </div>
               </div>
-            )}
 
-            {status === 'error' && (
-              <div style={{ background: 'rgba(255,60,60,0.08)', border: '1px solid rgba(255,60,60,0.25)', borderRadius: 3, padding: 14, textAlign: 'center', color: '#ff5c5c', fontSize: 13 }}>
-                {errorMsg}
-              </div>
-            )}
-          </>
+              <ol className="steps" aria-label="Progress">
+                {STEPS.map((name, i) => (
+                  <li key={name} className={i < step ? 'done' : i === step ? 'current' : ''} aria-current={i === step ? 'step' : undefined}>
+                    <span className="step-num">{i < step ? '✓' : i + 1}</span>
+                    <span className="step-name">{name}</span>
+                  </li>
+                ))}
+              </ol>
+
+              {step === 0 && <FundStep client={client} owner={owner} balances={balances} />}
+              {step >= 1 && resetAt && (
+                <Notice>
+                  This account reached today’s gas limit. It can send again at{' '}
+                  {resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.
+                </Notice>
+              )}
+              {step === 1 && <EnableStep client={client} owner={owner} balances={balances} paymaster={paymaster} blocked={!!resetAt} onDone={(r) => setReceipts((all) => [r, ...all])} />}
+              {step === 2 && <SendStep client={client} owner={owner} balances={balances} paymaster={paymaster} blocked={!!resetAt} onDone={(r) => setReceipts((all) => [r, ...all])} />}
+
+              {owner.kind === 'browser' && <BrowserKeyNote />}
+            </>
+          )}
+        </section>
+
+        {activity.length > 0 && (
+          <section className="receipts" aria-label="Your transactions">
+            {activity.map((r) => (
+              <article key={r.txHash} className={`receipt ${r.success === false ? 'receipt-failed' : ''}`}>
+                <div className="receipt-head">
+                  <span className="receipt-title">{r.success === false ? `${r.label} (reverted)` : r.label}</span>
+                  <AddressLink address={r.txHash} kind="tx" />
+                </div>
+                <dl className="receipt-grid">
+                  <div><dt>Gas paid</dt><dd>{fmtWif(r.wifCharged, 4)} $WIF</dd></div>
+                  <div><dt>Burned</dt><dd>{fmtWif(r.wifBurned, 4)} $WIF</dd></div>
+                  <div><dt>ETH used</dt><dd>0</dd></div>
+                </dl>
+              </article>
+            ))}
+          </section>
         )}
-      </div>
 
-      <div style={{ marginTop: 48, width: '100%', maxWidth: 440 }}>
-        <div style={{ fontSize: 11, color: 'var(--muted)', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 14 }}>
-          On-chain · Robinhood Chain
-        </div>
-        <div style={{ display: 'grid', gap: 10, fontSize: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-            <span style={{ color: 'var(--muted)' }}>Paymaster</span>
-            <a href={`${EXPLORER}/address/${PAYMASTER}`} target="_blank" rel="noreferrer" className="mono" style={{ color: 'var(--green)' }}>
-              {PAYMASTER.slice(0, 6)}…{PAYMASTER.slice(-4)}
-            </a>
+        <section className="stats" aria-label="Paymaster totals">
+          <div className="stat">
+            <span className="stat-value">{stats ? Number(stats.ops).toLocaleString('en-US') : '—'}</span>
+            <span className="stat-label">transactions sponsored</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-            <span style={{ color: 'var(--muted)' }}>Rate Provider</span>
-            <a href={`${EXPLORER}/address/${RATE_PROVIDER}`} target="_blank" rel="noreferrer" className="mono" style={{ color: 'var(--green)' }}>
-              {RATE_PROVIDER.slice(0, 6)}…{RATE_PROVIDER.slice(-4)}
-            </a>
+          <div className="stat">
+            <span className="stat-value">{stats ? fmtWif(stats.charged, 0) : '—'}</span>
+            <span className="stat-label">$WIF paid as gas</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-            <span style={{ color: 'var(--muted)' }}>$WIF</span>
-            <a href={`${EXPLORER}/address/${WIF_TOKEN}`} target="_blank" rel="noreferrer" className="mono" style={{ color: 'var(--green)' }}>
-              {WIF_TOKEN.slice(0, 6)}…{WIF_TOKEN.slice(-4)}
-            </a>
+          <div className="stat">
+            <span className="stat-value accent">{stats ? fmtWif(stats.burned, 0) : '—'}</span>
+            <span className="stat-label">$WIF burned</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-            <span style={{ color: 'var(--muted)' }}>EntryPoint</span>
-            <span className="mono">{ENTRY_POINT.slice(0, 6)}…{ENTRY_POINT.slice(-4)}</span>
-          </div>
-        </div>
-      </div>
+        </section>
+        {stats && stats.queuedBurn > 0n && (
+          <p className="hint center">
+            Burns settle in batches with <span className="mono">WIF.burn()</span>: {fmtWif(stats.queuedBurn)} $WIF is queued for the next one.
+          </p>
+        )}
 
-      <div style={{ marginTop: 56, fontSize: 11, color: '#333', letterSpacing: 1, textTransform: 'uppercase' }}>
-        Built for World is Flat · Robinhood Chain
-      </div>
+        <details className="builders">
+          <summary>Add $WIF gas to your app</summary>
+          <p>Any ERC-4337 v0.7 smart account can use it. No API key and no signature: just point at the paymaster.</p>
+          <pre className="code"><code>{`import { createSmartAccountClient } from 'permissionless'
+
+const client = createSmartAccountClient({
+  account,                       // e.g. toSimpleSmartAccount(...)
+  chain: robinhood,              // chain id 4663
+  bundlerTransport: http('${BUNDLER_URL}'),
+  paymaster: {
+    getPaymasterData: async () => ({
+      paymaster: '${PAYMASTER}',
+      paymasterData: '0x',
+      paymasterVerificationGasLimit: ${PAYMASTER_VERIFICATION_GAS}n,
+      paymasterPostOpGasLimit: ${PAYMASTER_POST_OP_GAS}n,
+    }),
+  },
+})
+
+// New accounts: make the first call approve(paymaster, max) on $WIF.
+// The paymaster sponsors that one setup call and charges it in $WIF.`}</code></pre>
+        </details>
+      </main>
+
+      <footer className="footer">
+        <div className="contracts">
+          <span>Paymaster <AddressLink address={PAYMASTER} /></span>
+          <span>$WIF <AddressLink address={WIF_TOKEN} /></span>
+          <span>EntryPoint <AddressLink address={ENTRY_POINT} /></span>
+        </div>
+        <div className="footer-links">
+          <a className="link" href={REPO_URL} target="_blank" rel="noreferrer">GitHub</a>
+          <span>Built for the world is flat hackathon</span>
+        </div>
+      </footer>
+    </div>
+  )
+}
+
+function BrowserKeyNote() {
+  const [shown, setShown] = useState(false)
+  const key = browserKey()
+  if (!key) return null
+  return (
+    <div className="keynote">
+      <span>This account’s key lives only in this browser.</span>
+      {shown ? (
+        <span className="keynote-key">
+          <span className="mono break">{key}</span>
+          <Copy value={key} label="private key" />
+        </span>
+      ) : (
+        <button type="button" className="textbtn" onClick={() => setShown(true)}>Back up key</button>
+      )}
     </div>
   )
 }

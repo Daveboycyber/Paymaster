@@ -1,0 +1,12 @@
+{
+  "name": "wif-paymaster-keeper",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node keeper.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "viem": "2.57.13"
+  }
+}
