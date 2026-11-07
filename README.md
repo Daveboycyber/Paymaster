@@ -8,7 +8,7 @@ Built for the [World is Flat Hackathon](https://worldisflat.fun/build).
 
 **Live demo:** [https://paymaster-y3tc-zeta.vercel.app](https://paymaster-y3tc-zeta.vercel.app)
 
-**Proof (real sponsored UserOp, 0 ETH):** [0xcd9525ff…72c4](https://robinhoodchain.blockscout.com.com/tx/0xcd9525ff63b8cd226c4b3682ee35054aef2c92424b16dd514cd594b6556872c4)
+**Proof (real sponsored UserOp, 0 ETH):** [0xcd9525ff…72c4](https://robinhoodchain.blockscout.com/tx/0xcd9525ff63b8cd226c4b3682ee35054aef2c92424b16dd514cd594b6556872c4)
 
 ---
 
