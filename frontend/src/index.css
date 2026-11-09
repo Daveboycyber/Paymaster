@@ -646,10 +646,61 @@ a {
   margin: 10px 0;
 }
 
-.code {
+.codeblock {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 10px;
+  overflow: hidden;
+}
+
+.codeblock + .codeblock {
+  margin-top: 10px;
+}
+
+.codeblock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.codeblock-head span {
+  color: var(--accent);
+  opacity: 0.8;
+}
+
+.codeblock-copy {
+  background: var(--bg);
+}
+
+.codeblock-copy:hover,
+.copy.done {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.tok-s,
+.tok-n {
+  color: var(--accent);
+}
+
+.tok-k {
+  color: #8fc93a;
+}
+
+.tok-c {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.code {
+  margin: 0;
   padding: 14px;
   overflow-x: auto;
   font-family: var(--mono);

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { BUNDLER_URL, ENTRY_POINT, PAYMASTER, PAYMASTER_POST_OP_GAS, PAYMASTER_VERIFICATION_GAS, REPO_URL, WIF_TOKEN } from './config'
-import { AddressLink, Button, Copy, Notice } from './components/ui'
+import { AddressLink, Button, CodeBlock, Copy, Notice } from './components/ui'
 import { EnableStep, FundStep, SendStep } from './components/Steps'
 import { friendlyError } from './lib/errors'
 import { fmtEth, fmtWif, short } from './lib/format'
@@ -21,6 +21,26 @@ function remember(kind: Owner['kind'] | null) {
     // storage blocked: the session just won't be restored on reload
   }
 }
+
+const SNIPPET = `import { http } from 'viem'
+import { createSmartAccountClient } from 'permissionless'
+
+const client = createSmartAccountClient({
+  account,                       // e.g. toSimpleSmartAccount(...)
+  chain: robinhood,              // chain id 4663
+  bundlerTransport: http('${BUNDLER_URL}'),
+  paymaster: {
+    getPaymasterData: async () => ({
+      paymaster: '${PAYMASTER}',
+      paymasterData: '0x',
+      paymasterVerificationGasLimit: ${PAYMASTER_VERIFICATION_GAS}n,
+      paymasterPostOpGasLimit: ${PAYMASTER_POST_OP_GAS}n,
+    }),
+  },
+})
+
+// New accounts: make the first call approve(paymaster, max) on $WIF.
+// The paymaster sponsors that one setup call and charges it in $WIF.`
 
 export default function App() {
   const [owner, setOwner] = useState<Owner | null>(null)
@@ -225,24 +245,8 @@ export default function App() {
         <details className="builders">
           <summary>Add $WIF gas to your app</summary>
           <p>Any ERC-4337 v0.7 smart account can use it. No API key and no signature: just point at the paymaster.</p>
-          <pre className="code"><code>{`import { createSmartAccountClient } from 'permissionless'
-
-const client = createSmartAccountClient({
-  account,                       // e.g. toSimpleSmartAccount(...)
-  chain: robinhood,              // chain id 4663
-  bundlerTransport: http('${BUNDLER_URL}'),
-  paymaster: {
-    getPaymasterData: async () => ({
-      paymaster: '${PAYMASTER}',
-      paymasterData: '0x',
-      paymasterVerificationGasLimit: ${PAYMASTER_VERIFICATION_GAS}n,
-      paymasterPostOpGasLimit: ${PAYMASTER_POST_OP_GAS}n,
-    }),
-  },
-})
-
-// New accounts: make the first call approve(paymaster, max) on $WIF.
-// The paymaster sponsors that one setup call and charges it in $WIF.`}</code></pre>
+          <CodeBlock lang="bash" code="npm i permissionless viem" label="install command" />
+          <CodeBlock lang="TypeScript" code={SNIPPET} label="paymaster snippet" />
         </details>
       </main>
 
