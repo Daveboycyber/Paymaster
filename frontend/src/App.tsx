@@ -113,7 +113,7 @@ export default function App() {
     <div className="page">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden>◐</span> wif paymaster
+          <img className="brand-mark" src="/logo.svg" alt="" width={22} height={22} /> wif paymaster
         </div>
         <div className="topbar-right">
           <span className={`pill ${paymaster.live ? 'pill-live' : paymaster.live === false ? 'pill-down' : ''}`}>
