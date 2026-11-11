@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { EIP1193Provider } from 'viem'
-import { useAccount, useConnect, useDisconnect, type Connector } from 'wagmi'
+import { useAccount, useConfig, useConnect, useDisconnect, type Connector } from 'wagmi'
 import { BUNDLER_URL, ENTRY_POINT, PAYMASTER, PAYMASTER_POST_OP_GAS, PAYMASTER_VERIFICATION_GAS, REPO_URL, WIF_TOKEN } from './config'
 import { AddressLink, Button, CodeBlock, Copy, Notice } from './components/ui'
 import { AccountMenu } from './components/AccountMenu'
 import { EnableStep, FundStep, SendStep } from './components/Steps'
+import { WalletModal } from './components/WalletModal'
 import { friendlyError } from './lib/errors'
 import { fmtEth, fmtWif } from './lib/format'
 import { useBalances, useHistory, useLimitReset, usePaymaster, useStats } from './lib/hooks'
@@ -68,6 +69,9 @@ export default function App() {
   const wallet = useAccount()
   const { connectors, connectAsync } = useConnect()
   const { disconnectAsync } = useDisconnect()
+  const config = useConfig()
+  const [picking, setPicking] = useState(false)
+  const [recentId, setRecentId] = useState<string | null>(null)
 
   // EIP-6963 wallets by name; the plain injected connector only when no wallet announced itself
   const announced = connectors.filter((c) => c.id !== 'injected')
@@ -110,7 +114,20 @@ export default function App() {
     }
   }, [useBrowser, walletAddress, walletConnector])
 
+  // One button: connect straight away when the browser has a single wallet, otherwise let the user pick
+  const openConnect = async () => {
+    setError('')
+    if (wallets.length === 1) return connectWith(wallets[0])
+    try {
+      setRecentId((await config.storage?.getItem('recentConnectorId')) ?? null)
+    } catch {
+      setRecentId(null)
+    }
+    setPicking(true)
+  }
+
   const connectWith = async (connector: Connector) => {
+    setPicking(false)
     setError('')
     setPending(`Open ${connector.name}…`)
     try {
@@ -124,6 +141,7 @@ export default function App() {
   }
 
   const connectBrowser = async () => {
+    setPicking(false)
     setError('')
     if (wallet.status === 'connected') await disconnectAsync().catch(() => {})
     rememberBrowser(true)
@@ -199,15 +217,8 @@ export default function App() {
                 <Button busy={connecting}>Connecting</Button>
               ) : (
                 <>
-                  {wallets.map((c) => (
-                    <Button key={c.uid} onClick={() => connectWith(c)}>
-                      <span className="wallet-btn">
-                        {c.icon && <img src={c.icon} alt="" width={18} height={18} />}
-                        {c.id === 'injected' ? 'Connect wallet' : `Connect ${c.name}`}
-                      </span>
-                    </Button>
-                  ))}
-                  <Button variant={wallets.length ? 'ghost' : 'primary'} onClick={connectBrowser}>
+                  <Button onClick={openConnect}>Connect wallet</Button>
+                  <Button variant="ghost" onClick={connectBrowser}>
                     Create a browser account
                   </Button>
                 </>
@@ -218,6 +229,14 @@ export default function App() {
                   : 'No wallet extension found. A browser account is a key kept on this device, best for small amounts.'}
               </p>
               {error && <Notice tone="error">{error}</Notice>}
+              <WalletModal
+                open={picking}
+                wallets={wallets}
+                recentId={recentId}
+                onPick={connectWith}
+                onBrowserAccount={connectBrowser}
+                onClose={() => setPicking(false)}
+              />
             </div>
           ) : (
             <>
