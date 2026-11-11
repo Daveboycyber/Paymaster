@@ -7,7 +7,7 @@ import { SEND_GAS, SETUP_GAS, type Balances, type PaymasterStatus } from '../lib
 import { friendlyError } from '../lib/errors'
 import type { SmartClient, Sponsored } from '../lib/smart'
 import type { Owner } from '../lib/wallet'
-import { publicClient } from '../lib/wallet'
+import { ensureRobinhood, publicClient } from '../lib/wallet'
 import { Button, Copy, Notice } from './ui'
 
 type StepProps = {
@@ -49,8 +49,10 @@ export function FundStep({ client, owner, balances }: { client: SmartClient; own
     if (!value) return setError('Enter an amount.')
     if (balances.ownerWif != null && value > balances.ownerWif) return setError('Your wallet doesn’t have that much $WIF.')
     setError('')
-    setBusy('Confirm in your wallet…')
     try {
+      setBusy('Switching to Robinhood Chain…')
+      await ensureRobinhood(owner.client)
+      setBusy('Confirm in your wallet…')
       const hash = await owner.client.sendTransaction({
         to: WIF_TOKEN,
         data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [address, value] }),

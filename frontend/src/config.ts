@@ -12,10 +12,10 @@ export const robinhood = defineChain({
 })
 
 // Live contracts on Robinhood Chain. Override with VITE_* env vars after a redeploy.
-export const PAYMASTER = (env.VITE_PAYMASTER || '0x7e0bCEFa1568Bf8ad9a20F1AbfDE5FaE47ac84dE') as Address
+export const PAYMASTER = (env.VITE_PAYMASTER || '0x2F35763c885684a0c864945f027eDf5BE5d7002b') as Address
 export const WIF_TOKEN = (env.VITE_WIF_TOKEN || '0x5173b8eA6923c2d40267890D45C46a3480954773') as Address
 export const ENTRY_POINT = entryPoint07Address
-export const PAYMASTER_DEPLOY_BLOCK = BigInt(env.VITE_PAYMASTER_DEPLOY_BLOCK || '0')
+export const PAYMASTER_DEPLOY_BLOCK = BigInt(env.VITE_PAYMASTER_DEPLOY_BLOCK || '108578734')
 
 // Any ERC-4337 v0.7 bundler that serves chain 4663 (Pimlico public works without a key)
 export const BUNDLER_URL = env.VITE_BUNDLER_URL || 'https://public.pimlico.io/v2/4663/rpc'

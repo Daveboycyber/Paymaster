@@ -1,6 +1,6 @@
-import { createPublicClient, createWalletClient, custom, http, toHex, type Account, type Address, type Chain, type LocalAccount, type Transport, type WalletClient } from 'viem'
+import { createPublicClient, createWalletClient, custom, http, type Account, type Address, type Chain, type EIP1193Provider, type LocalAccount, type Transport, type WalletClient } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
-import { robinhood, EXPLORER } from '../config'
+import { robinhood } from '../config'
 
 export const publicClient = createPublicClient({ chain: robinhood, transport: http() })
 
@@ -11,7 +11,7 @@ export type Owner =
 
 const BROWSER_KEY = 'wif-paymaster:browser-key'
 
-function read(key: string) {
+export function read(key: string) {
   try {
     return localStorage.getItem(key)
   } catch {
@@ -19,7 +19,7 @@ function read(key: string) {
   }
 }
 
-function write(key: string, value: string) {
+export function write(key: string, value: string) {
   try {
     localStorage.setItem(key, value)
   } catch {
@@ -44,32 +44,28 @@ export function browserKey() {
   return read(BROWSER_KEY) ?? sessionKey
 }
 
-export const hasExtensionWallet = () => typeof window !== 'undefined' && !!window.ethereum
-
-export async function connectWallet(): Promise<Owner> {
-  const eth = window.ethereum
-  if (!eth) throw new Error('No browser wallet found. Use a browser account instead.')
-  const [address] = await eth.request({ method: 'eth_requestAccounts' })
-  await switchToRobinhood(eth)
-  const client = createWalletClient({ account: address, chain: robinhood, transport: custom(eth) })
+/** A wallet the user connected through wagmi. Builds the client locally: no wallet round trip. */
+export function walletOwner(address: Address, provider: EIP1193Provider): Owner {
+  const client = createWalletClient({ account: address, chain: robinhood, transport: custom(provider) })
   return { kind: 'wallet', address, client }
 }
 
-async function switchToRobinhood(eth: NonNullable<Window['ethereum']>) {
-  const chainId = toHex(robinhood.id)
+const unknownChain = (err: unknown): boolean => {
+  for (let e = err as { code?: number; message?: string; cause?: unknown } | undefined; e; e = e.cause as typeof e) {
+    if (e.code === 4902 || /unrecognized chain|wallet_addEthereumChain/i.test(e.message ?? '')) return true
+  }
+  return false
+}
+
+/** Only sending a transaction from the wallet needs Robinhood Chain; signing for the smart account works on any network. */
+export async function ensureRobinhood(client: WalletClient<Transport, Chain, Account>) {
+  if ((await client.getChainId()) === robinhood.id) return
   try {
-    await eth.request({ method: 'wallet_switchEthereumChain', params: [{ chainId }] })
+    await client.switchChain({ id: robinhood.id })
   } catch (err) {
-    if ((err as { code?: number }).code !== 4902) throw err
-    await eth.request({
-      method: 'wallet_addEthereumChain',
-      params: [{
-        chainId,
-        chainName: robinhood.name,
-        nativeCurrency: robinhood.nativeCurrency,
-        rpcUrls: [...robinhood.rpcUrls.default.http],
-        blockExplorerUrls: [EXPLORER],
-      }],
-    })
+    if (!unknownChain(err)) throw err
+    await client.addChain({ chain: robinhood })
   }
 }
+
+export const hasExtensionWallet = () => typeof window !== 'undefined' && !!window.ethereum
