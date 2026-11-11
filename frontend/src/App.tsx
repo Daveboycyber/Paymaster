@@ -1,26 +1,41 @@
 import { useEffect, useState } from 'react'
+import type { EIP1193Provider } from 'viem'
+import { useAccount, useConnect, useDisconnect, type Connector } from 'wagmi'
 import { BUNDLER_URL, ENTRY_POINT, PAYMASTER, PAYMASTER_POST_OP_GAS, PAYMASTER_VERIFICATION_GAS, REPO_URL, WIF_TOKEN } from './config'
 import { AddressLink, Button, CodeBlock, Copy, Notice } from './components/ui'
+import { AccountMenu } from './components/AccountMenu'
 import { EnableStep, FundStep, SendStep } from './components/Steps'
 import { friendlyError } from './lib/errors'
-import { fmtEth, fmtWif, short } from './lib/format'
+import { fmtEth, fmtWif } from './lib/format'
 import { useBalances, useHistory, useLimitReset, usePaymaster, useStats } from './lib/hooks'
 import type { SmartClient, Sponsored } from './lib/smart'
-import { browserKey, browserOwner, connectWallet, hasExtensionWallet, type Owner } from './lib/wallet'
+import { browserKey, browserOwner, hasExtensionWallet, walletOwner, type Owner } from './lib/wallet'
 
 const LAST_OWNER = 'wif-paymaster:owner'
 const STEPS = ['Add $WIF', 'Turn on $WIF gas', 'Send'] as const
 
 type Receipt = Pick<Sponsored, 'txHash' | 'wifCharged' | 'wifBurned'> & { success?: boolean; label: string }
 
-function remember(kind: Owner['kind'] | null) {
+// Only the browser account is remembered here; wagmi remembers and restores the wallet itself
+function rememberBrowser(on: boolean) {
   try {
-    if (kind) localStorage.setItem(LAST_OWNER, kind)
+    if (on) localStorage.setItem(LAST_OWNER, 'browser')
     else localStorage.removeItem(LAST_OWNER)
   } catch {
     // storage blocked: the session just won't be restored on reload
   }
 }
+
+function lastWasBrowser() {
+  try {
+    return localStorage.getItem(LAST_OWNER) === 'browser' && !!browserKey()
+  } catch {
+    return false
+  }
+}
+
+// The smart-account code is the heavy part of connecting: start loading it as soon as the page is up
+const loadSmart = () => import('./lib/smart')
 
 const SNIPPET = `import { http } from 'viem'
 import { createSmartAccountClient } from 'permissionless'
@@ -45,9 +60,86 @@ const client = createSmartAccountClient({
 export default function App() {
   const [owner, setOwner] = useState<Owner | null>(null)
   const [client, setClient] = useState<SmartClient | null>(null)
-  const [connecting, setConnecting] = useState<string | false>(false)
+  const [useBrowser, setUseBrowser] = useState(lastWasBrowser)
+  const [pending, setPending] = useState<string | false>(false)
   const [error, setError] = useState('')
   const [receipts, setReceipts] = useState<Receipt[]>([])
+
+  const wallet = useAccount()
+  const { connectors, connectAsync } = useConnect()
+  const { disconnectAsync } = useDisconnect()
+
+  // EIP-6963 wallets by name; the plain injected connector only when no wallet announced itself
+  const announced = connectors.filter((c) => c.id !== 'injected')
+  const wallets = announced.length ? announced : hasExtensionWallet() ? connectors.filter((c) => c.id === 'injected') : []
+
+  useEffect(() => {
+    const t = setTimeout(loadSmart, 0)
+    return () => clearTimeout(t)
+  }, [])
+
+  // One place builds the smart account, from whichever owner is active. It reruns when the wallet
+  // switches account or disconnects (in the page or in the wallet itself).
+  const walletAddress = wallet.status === 'connected' ? wallet.address : undefined
+  const walletConnector = wallet.status === 'connected' ? wallet.connector : undefined
+  useEffect(() => {
+    if (!useBrowser && !(walletAddress && walletConnector)) {
+      setOwner(null)
+      setClient(null)
+      setPending(false)
+      return
+    }
+    let stale = false
+    setPending((p) => p || 'Loading your account…')
+    ;(async () => {
+      const next = useBrowser
+        ? browserOwner()
+        : walletOwner(walletAddress!, (await walletConnector!.getProvider()) as EIP1193Provider)
+      const { makeSmartClient } = await loadSmart()
+      const smart = await makeSmartClient(next)
+      if (stale) return
+      setOwner(next)
+      setClient(smart)
+      setReceipts([])
+      setError('')
+    })()
+      .catch((err) => !stale && setError(friendlyError(err)))
+      .finally(() => !stale && setPending(false))
+    return () => {
+      stale = true
+    }
+  }, [useBrowser, walletAddress, walletConnector])
+
+  const connectWith = async (connector: Connector) => {
+    setError('')
+    setPending(`Open ${connector.name}…`)
+    try {
+      setUseBrowser(false)
+      rememberBrowser(false)
+      await connectAsync({ connector })
+    } catch (err) {
+      setError(friendlyError(err))
+      setPending(false)
+    }
+  }
+
+  const connectBrowser = async () => {
+    setError('')
+    if (wallet.status === 'connected') await disconnectAsync().catch(() => {})
+    rememberBrowser(true)
+    setUseBrowser(true)
+  }
+
+  const disconnect = async () => {
+    setUseBrowser(false)
+    rememberBrowser(false)
+    setReceipts([])
+    if (wallet.status !== 'disconnected') await disconnectAsync().catch(() => {})
+  }
+
+  const connecting =
+    pending ||
+    (wallet.status === 'reconnecting' ? 'Reconnecting…' : wallet.status === 'connecting' ? 'Confirm in your wallet…' : false)
 
   const account = client?.account.address
   const balances = useBalances(account, owner?.kind === 'wallet' ? owner.address : undefined)
@@ -63,49 +155,6 @@ export default function App() {
       .map((h) => ({ ...h, label: 'Sponsored transaction' })),
   ]
 
-  const connect = async (getOwner: () => Owner | Promise<Owner>, label: string) => {
-    setError('')
-    setConnecting(label)
-    try {
-      const next = await getOwner()
-      // The smart-account code loads only when someone connects
-      const { makeSmartClient } = await import('./lib/smart')
-      setClient(await makeSmartClient(next))
-      setOwner(next)
-      remember(next.kind)
-    } catch (err) {
-      setError(friendlyError(err))
-    } finally {
-      setConnecting(false)
-    }
-  }
-
-  // Restore the last session without prompting
-  useEffect(() => {
-    let last: string | null = null
-    try {
-      last = localStorage.getItem(LAST_OWNER)
-    } catch {
-      return
-    }
-    if (last === 'browser' && browserKey()) connect(browserOwner, 'Restoring…')
-    if (last === 'wallet' && window.ethereum) {
-      window.ethereum
-        .request({ method: 'eth_accounts' })
-        .then((accounts) => {
-          if (accounts.length) connect(connectWallet, 'Restoring…')
-        })
-        .catch(() => {})
-    }
-  }, [])
-
-  const disconnect = () => {
-    setOwner(null)
-    setClient(null)
-    setReceipts([])
-    remember(null)
-  }
-
   const enabled = (balances.allowance ?? 0n) > 0n
   const step = !client ? -1 : enabled ? 2 : (balances.wif ?? 0n) > 0n ? 1 : 0
 
@@ -119,10 +168,15 @@ export default function App() {
           <span className={`pill ${paymaster.live ? 'pill-live' : paymaster.live === false ? 'pill-down' : ''}`}>
             <span className="dot" aria-hidden /> <span className="pill-text">Robinhood Chain</span>
           </span>
-          {owner && (
-            <button type="button" className="pill pill-button" onClick={disconnect} title="Disconnect">
-              {owner.kind === 'browser' ? 'Browser account' : short(owner.address)} ✕
-            </button>
+          {owner && client && (
+            <AccountMenu
+              owner={owner}
+              account={client.account.address}
+              wallet={walletConnector ? { name: walletConnector.name, icon: walletConnector.icon } : undefined}
+              balances={balances}
+              live={paymaster.live}
+              onDisconnect={disconnect}
+            />
           )}
         </div>
       </header>
@@ -141,18 +195,25 @@ export default function App() {
 
           {!client || !owner ? (
             <div className="connect">
-              {hasExtensionWallet() ? (
+              {connecting ? (
+                <Button busy={connecting}>Connecting</Button>
+              ) : (
                 <>
-                  <Button onClick={() => connect(connectWallet, 'Connecting…')} busy={connecting}>Connect wallet</Button>
-                  <Button variant="ghost" onClick={() => connect(browserOwner, 'Creating…')} disabled={!!connecting}>
+                  {wallets.map((c) => (
+                    <Button key={c.uid} onClick={() => connectWith(c)}>
+                      <span className="wallet-btn">
+                        {c.icon && <img src={c.icon} alt="" width={18} height={18} />}
+                        {c.id === 'injected' ? 'Connect wallet' : `Connect ${c.name}`}
+                      </span>
+                    </Button>
+                  ))}
+                  <Button variant={wallets.length ? 'ghost' : 'primary'} onClick={connectBrowser}>
                     Create a browser account
                   </Button>
                 </>
-              ) : (
-                <Button onClick={() => connect(browserOwner, 'Creating…')} busy={connecting}>Create a browser account</Button>
               )}
               <p className="hint">
-                {hasExtensionWallet()
+                {wallets.length
                   ? 'Your wallet only signs. A gas-free smart account is created for it.'
                   : 'No wallet extension found. A browser account is a key kept on this device, best for small amounts.'}
               </p>

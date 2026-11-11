@@ -1,4 +1,5 @@
-import { encodeAbiParameters, encodeFunctionData, http, maxUint256, parseEventLogs, type Address, type Hex } from 'viem'
+import { encodeAbiParameters, encodeFunctionData, http, maxUint256, parseEventLogs, type Address, type Hex, type LocalAccount } from 'viem'
+import { toAccount } from 'viem/accounts'
 import { createSmartAccountClient } from 'permissionless'
 import { toSimpleSmartAccount } from 'permissionless/accounts'
 import { createPimlicoClient } from 'permissionless/clients/pimlico'
@@ -6,7 +7,7 @@ import {
   BUNDLER_URL, ENTRY_POINT, PAYMASTER, PAYMASTER_POST_OP_GAS, PAYMASTER_VERIFICATION_GAS, WIF_TOKEN, robinhood,
 } from '../config'
 import { erc20Abi, paymasterAbi } from './abi'
-import { publicClient, type Owner } from './wallet'
+import { publicClient, read, write, type Owner } from './wallet'
 
 const entryPoint = { address: ENTRY_POINT, version: '0.7' } as const
 
@@ -53,12 +54,30 @@ async function feesPerGas() {
   }
 }
 
+// The smart account address is fixed by its owner, so it is cached: reconnecting skips the RPC lookup
+const addressKey = (owner: Address) => `wif-paymaster:account:${ENTRY_POINT}:${owner.toLowerCase()}`
+
+// A wallet owner wrapped as a signer, so permissionless doesn't ask the wallet for its accounts again
+function signer(owner: Owner): LocalAccount {
+  if (owner.kind === 'browser') return owner.account
+  const { client } = owner
+  return toAccount({
+    address: owner.address,
+    signMessage: ({ message }) => client.signMessage({ message }),
+    signTypedData: (typedData) => client.signTypedData(typedData as Parameters<typeof client.signTypedData>[0]),
+    signTransaction: () => Promise.reject(new Error('The smart account signs messages only.')),
+  })
+}
+
 export async function makeSmartClient(owner: Owner) {
+  const cached = read(addressKey(owner.address)) as Address | null
   const account = await toSimpleSmartAccount({
     client: publicClient,
-    owner: owner.kind === 'wallet' ? owner.client : owner.account,
+    owner: signer(owner),
     entryPoint,
+    ...(cached ? { address: cached } : {}),
   })
+  if (!cached) write(addressKey(owner.address), account.address)
   return createSmartAccountClient({
     account,
     chain: robinhood,
