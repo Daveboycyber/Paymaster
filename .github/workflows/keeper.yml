@@ -1,11 +1,13 @@
 name: keeper
 
-# Refreshes the WIF/ETH rate and flushes fees every 30 minutes.
+# Refreshes the WIF/ETH rate and flushes fees.
+# GitHub throttles high-frequency schedules (*/30 often stretches to many hours).
+# Every 2 hours at :05 UTC is more reliable and stays inside the 6h rate window.
 # Setup: repo variables RATE_PROVIDER, PAYMASTER (and optionally RPC_URL),
 # repo secret KEEPER_PRIVATE_KEY (the address set with BoundedRateProvider.setKeeper, holding a little ETH).
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "5 */2 * * *"
   workflow_dispatch:
 
 concurrency: keeper
